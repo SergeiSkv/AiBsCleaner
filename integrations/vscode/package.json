@@ -1,0 +1,96 @@
+{
+    "name": "aibscleaner",
+    "displayName": "AiBsCleaner - AI Bullshit Cleaner",
+    "description": "Detect and fix AI-generated bullshit in Go code",
+    "version": "0.1.0",
+    "publisher": "aibscleaner",
+    "engines": {
+        "vscode": "^1.74.0"
+    },
+    "categories": [
+        "Linters",
+        "Programming Languages"
+    ],
+    "keywords": [
+        "go",
+        "golang",
+        "linter",
+        "performance",
+        "ai",
+        "code quality"
+    ],
+    "activationEvents": [
+        "onLanguage:go"
+    ],
+    "main": "./extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "aibscleaner.analyze",
+                "title": "Run AiBsCleaner Analysis"
+            },
+            {
+                "command": "aibscleaner.fix",
+                "title": "Auto-fix with AiBsCleaner"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "aibscleaner.analyze",
+                "key": "ctrl+shift+b",
+                "mac": "cmd+shift+b",
+                "when": "editorLangId == go"
+            }
+        ],
+        "configuration": {
+            "title": "AiBsCleaner",
+            "properties": {
+                "aibscleaner.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable AiBsCleaner"
+                },
+                "aibscleaner.runOnSave": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Run analysis on file save"
+                },
+                "aibscleaner.minSeverity": {
+                    "type": "string",
+                    "enum": ["LOW", "MEDIUM", "HIGH"],
+                    "default": "MEDIUM",
+                    "description": "Minimum severity to report"
+                },
+                "aibscleaner.autoFix": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Automatically fix simple issues"
+                }
+            }
+        },
+        "problemMatchers": [
+            {
+                "name": "aibscleaner",
+                "owner": "go",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(\\w+):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.74.0",
+        "@types/node": "^18.x"
+    }
+}

@@ -1,0 +1,84 @@
+# Binaries
+aibscleaner
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.prof
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build directories
+dist/
+build/
+bin/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Debug files
+debug
+__debug_bin
+
+# ============================
+# PREMIUM FEATURES (NOT OPEN SOURCE)
+# ============================
+# These directories contain commercial features
+/analyzer/llm/
+/plugin/
+/server/
+/benchmark_gen/
+/cloud/
+/enterprise/
+/premium/
+
+# Premium Go files
+*.premium.go
+*_premium.go
+*_commercial.go
+
+# Premium configurations
+.env.premium
+config.premium.yaml
+license.key
+*.license
+
+# Plugin builds
+/goland-plugin/
+/vscode-extension/
+*.jar
+*.vsix
+
+# Server deployment
+/deploy/
+/k8s/
+docker-compose.premium.yml

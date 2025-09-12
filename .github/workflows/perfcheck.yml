@@ -1,0 +1,80 @@
+name: Performance Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  analyze:
+    name: Run Performance Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+    
+    - name: Install aiBsCleaner
+      run: |
+        go build -o aiBsCleaner .
+        chmod +x aiBsCleaner
+    
+    - name: Run analysis
+      id: analysis
+      run: |
+        ./aiBsCleaner --json . > analysis.json
+        echo "high_issues=$(jq '.summary.high' analysis.json)" >> $GITHUB_OUTPUT
+        echo "medium_issues=$(jq '.summary.medium' analysis.json)" >> $GITHUB_OUTPUT
+        echo "low_issues=$(jq '.summary.low' analysis.json)" >> $GITHUB_OUTPUT
+    
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: aiBsCleaner-results
+        path: analysis.json
+    
+    - name: Comment PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const analysis = JSON.parse(fs.readFileSync('analysis.json', 'utf8'));
+          
+          const comment = `## 🔍 Performance Analysis Results
+          
+          **Summary:**
+          - 🔴 High: ${analysis.summary.high}
+          - 🟡 Medium: ${analysis.summary.medium}
+          - 🟢 Low: ${analysis.summary.low}
+          
+          ${analysis.summary.high > 0 ? '⚠️ **Critical issues found!** Please review before merging.' : '✅ No critical issues found.'}
+          
+          <details>
+          <summary>Top Issues</summary>
+          
+          ${analysis.issues.slice(0, 10).map(issue => 
+            `- **${issue.Type}** in \`${issue.File.split('/').pop()}\`:${issue.Line} - ${issue.Message}`
+          ).join('\n')}
+          
+          </details>`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Fail if critical issues
+      if: steps.analysis.outputs.high_issues > 0
+      run: |
+        echo "❌ Found ${{ steps.analysis.outputs.high_issues }} critical issues!"
+        jq '.issues[] | select(.Severity == "HIGH") | {File, Line, Type, Message}' analysis.json
+        exit 1

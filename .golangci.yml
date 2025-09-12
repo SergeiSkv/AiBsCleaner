@@ -1,0 +1,181 @@
+version: "2"
+
+run:
+  concurrency: 4
+  timeout: 5m
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+  go: "1.25"
+
+output:
+  formats:
+    tab:
+      colors: true
+  sort-order: [ "file","linter","severity" ]
+linters:
+  enable:
+    - gosec
+    - noctx
+    - errcheck
+    - bodyclose
+    - sqlclosecheck
+    - nestif
+    - nilnil
+    - rowserrcheck
+    - forcetypeassert
+    - errname
+    - errorlint
+    - dogsled
+    - exhaustive
+    - funlen
+    - goconst
+    - gocritic
+    - gocyclo
+    - staticcheck
+    - unconvert
+    - unparam
+    - wastedassign
+    - prealloc
+    - misspell
+    - goprintffuncname
+    - lll
+    - testifylint
+    - forbidigo
+    - asciicheck
+    - depguard
+  disable:
+    - depguard
+    - gochecknoglobals
+    - gocognit
+    - godox
+    - nakedret
+    - exhaustive
+    - whitespace
+    - wrapcheck
+    - wsl
+    - exhaustruct
+    - revive
+
+  exclusions:
+    generated: lax
+    rules:
+      - path: migrations/
+        linters:
+          - revive
+          - funlen
+          - gochecknoinits
+          - goimports
+          - forbidigo
+          - contextcheck
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - lll
+          - funlen
+      - path: pkg/grpc/
+        linters:
+          - gosec
+      - path: pkg/pb/
+        linters:
+          - gosec
+      - text: "G404: Use of weak random number generator"
+        linters:
+          - gosec
+      - text: "G401: Crypto primitive"
+        linters:
+          - gosec
+      - text: "G501: Blacklisted import crypto/md5"
+        linters:
+          - gosec
+      - text: "don't use math/rand in security-sensitive context"
+        linters:
+          - gosec
+
+  settings:
+    funlen:
+      lines: 100
+      statements: 50
+
+    goconst:
+      min-len: 2
+      min-occurrences: 2
+
+    gocritic:
+      disabled-checks:
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - whyNoLint
+        - wrapperFunc
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+
+    gocyclo:
+      min-complexity: 15
+
+    gosec:
+      severity: high
+      confidence: high
+      excludes:
+        - G104
+        - G401
+        - G404
+        - G501
+        - G505
+
+    lll:
+      line-length: 160
+
+    misspell:
+      locale: US
+
+    nestif:
+      min-complexity: 4
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: indent-error-flow
+        - name: if-return
+        - name: var-naming
+        - name: receiver-naming
+        - name: error-naming
+
+    forbidigo:
+      forbid:
+        - pattern: "panic"
+          msg: "Do not use panic in production code"
+        - pattern: "errors.Errorf"
+          msg: "Use github.com/pkg/errors.Errorf instead of errors.Errorf"
+
+    depguard:
+      rules:
+        Main:
+          files: [ "$all" ]
+          allow:
+            - "$gostd"  # Standard library
+            - "github.com/pkg/errors"
+            - "github.com/dgrijalva/jwt-go/v4"
+            - "github.com/tidwall/gjson"
+            - "github.com/golang/mock/gomock"
+            - "github.com/stretchr/testify"
+            - "github.com/alicebob/miniredis/v2"
+            - "go.mongodb.org"
+          deny:
+            - pkg: "errors"
+              desc: "use github.com/pkg/errors instead"
+issues:
+  fix: true
+  max-same-issues: 50
+  max-issues-per-linter: 50
