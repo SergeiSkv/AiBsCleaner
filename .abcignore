@@ -1,0 +1,47 @@
+# Temporary benchmark directories
+benchmark/temp_*
+benchmark/temp_repos/
+benchmark/temp_mongo/
+benchmark/temp_gin/
+
+# Test and vendor directories
+vendor/
+*_test.go
+testdata/
+test_data/
+test/
+mocks/
+
+# Build and temporary files
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+.benchmark_work/
+
+# IDE and system files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+
+# Node modules (if any)
+node_modules/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Coverage
+*.cover
+*.coverage
+coverage.txt
+coverage.html
