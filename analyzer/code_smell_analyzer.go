@@ -1,0 +1,408 @@
+package analyzer
+
+import (
+	"fmt"
+	"go/ast"
+	"go/token"
+	"strings"
+)
+
+// CodeSmellAnalyzer detects "bullshit code" - bad practices, code smells, and lazy programming
+type CodeSmellAnalyzer struct{}
+
+func NewCodeSmellAnalyzer() *CodeSmellAnalyzer {
+	return &CodeSmellAnalyzer{}
+}
+
+func (csa *CodeSmellAnalyzer) Name() string {
+	return "CodeSmellAnalyzer"
+}
+
+func (csa *CodeSmellAnalyzer) Analyze(filename string, node interface{}, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	astNode, ok := node.(ast.Node)
+	if !ok {
+		return issues
+	}
+
+	ast.Inspect(astNode, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.FuncDecl:
+			issues = append(issues, csa.analyzeFunction(node, filename, fset)...)
+		case *ast.GenDecl:
+			issues = append(issues, csa.analyzeDeclaration(node, filename, fset)...)
+		case *ast.IfStmt:
+			issues = append(issues, csa.analyzeIfStatement(node, filename, fset)...)
+		case *ast.CallExpr:
+			issues = append(issues, csa.analyzeCall(node, filename, fset)...)
+		case *ast.BasicLit:
+			issues = append(issues, csa.analyzeLiteral(node, filename, fset)...)
+		}
+		return true
+	})
+
+	return issues
+}
+
+func (csa *CodeSmellAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	// Check for too long functions (code smell)
+	if fn.Body != nil && len(fn.Body.List) > MaxFunctionStatements {
+		pos := fset.Position(fn.Pos())
+		issues = append(issues, Issue{
+			File:       filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       "GOD_FUNCTION",
+			Severity:   SeverityHigh,
+			Message:    "Function is too long (>" + fmt.Sprintf("%d", MaxFunctionStatements) + " statements) - split into smaller functions",
+			Suggestion: "Break down this function into smaller, focused functions",
+		})
+	}
+
+	// Check for too many parameters
+	if fn.Type.Params != nil && len(fn.Type.Params.List) > MaxFunctionParams {
+		pos := fset.Position(fn.Pos())
+		issues = append(issues, Issue{
+			File:       filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       "TOO_MANY_PARAMS",
+			Severity:   SeverityMedium,
+			Message:    "Function has too many parameters - consider using a struct",
+			Suggestion: "Group related parameters into a configuration struct",
+		})
+	}
+
+	// Check for single-letter variable names (except i, j, k for loops)
+	if fn.Body != nil {
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				for _, lhs := range node.Lhs {
+					if ident, ok := lhs.(*ast.Ident); ok {
+						if len(ident.Name) == 1 && ident.Name != "i" && ident.Name != "j" && ident.Name != "k" && ident.Name != "_" {
+							pos := fset.Position(ident.Pos())
+							issues = append(issues, Issue{
+								File:       filename,
+								Line:       pos.Line,
+								Column:     pos.Column,
+								Position:   pos,
+								Type:       "LAZY_NAMING",
+								Severity:   SeverityLow,
+								Message:    "Single-letter variable name '" + ident.Name + "' - use descriptive names",
+								Suggestion: "Use meaningful variable names for better readability",
+							})
+						}
+					}
+				}
+			case *ast.CallExpr:
+				// Check for fmt.Println debugging (should use proper logging)
+				if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
+					if ident, ok := sel.X.(*ast.Ident); ok {
+						if ident.Name == "fmt" && (sel.Sel.Name == "Println" || sel.Sel.Name == "Printf" || sel.Sel.Name == "Print") {
+							pos := fset.Position(node.Pos())
+							issues = append(issues, Issue{
+								File:       filename,
+								Line:       pos.Line,
+								Column:     pos.Column,
+								Position:   pos,
+								Type:       "CONSOLE_LOG_DEBUGGING",
+								Severity:   SeverityMedium,
+								Message:    "Using fmt.Print for debugging - use proper logging",
+								Suggestion: "Use a logging library (log, zap, logrus) instead of fmt.Print",
+							})
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+
+	// Check for missing error handling pattern
+	if fn.Body != nil {
+		csa.checkLazyErrorHandling(fn.Body, &issues, filename, fset)
+	}
+
+	// Check for TODO/FIXME/HACK comments (technical debt)
+	if fn.Doc != nil {
+		if fn.Doc != nil {
+			for _, comment := range fn.Doc.List {
+				upper := strings.ToUpper(comment.Text)
+				if strings.Contains(upper, "TODO") || strings.Contains(upper, "FIXME") ||
+					strings.Contains(upper, "HACK") || strings.Contains(upper, "XXX") {
+					pos := fset.Position(comment.Pos())
+					issues = append(issues, Issue{
+						File:       filename,
+						Line:       pos.Line,
+						Column:     pos.Column,
+						Position:   pos,
+						Type:       "TECHNICAL_DEBT",
+						Severity:   SeverityMedium,
+						Message:    "Unresolved TODO/FIXME/HACK comment",
+						Suggestion: "Address technical debt or create a ticket to track it",
+					})
+				}
+			}
+		}
+	}
+
+	return issues
+}
+
+func (csa *CodeSmellAnalyzer) analyzeDeclaration(decl *ast.GenDecl, filename string, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	// Check for global variables (usually bad practice)
+	if decl.Tok == token.VAR {
+		for _, spec := range decl.Specs {
+			if vspec, ok := spec.(*ast.ValueSpec); ok {
+				for _, name := range vspec.Names {
+					if name.IsExported() {
+						pos := fset.Position(name.Pos())
+						issues = append(issues, Issue{
+							File:       filename,
+							Line:       pos.Line,
+							Column:     pos.Column,
+							Position:   pos,
+							Type:       "GLOBAL_VARIABLE",
+							Severity:   SeverityMedium,
+							Message:    "Global variable '" + name.Name + "' - avoid global state",
+							Suggestion: "Use dependency injection or encapsulate in a struct",
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return issues
+}
+
+func (csa *CodeSmellAnalyzer) analyzeIfStatement(stmt *ast.IfStmt, filename string, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	// Check for deeply nested if statements (arrow anti-pattern)
+	nestLevel := csa.countIfNesting(stmt, 0)
+	if nestLevel > MaxNestedLoops {
+		pos := fset.Position(stmt.Pos())
+		issues = append(issues, Issue{
+			File:       filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       "ARROW_ANTIPATTERN",
+			Severity:   SeverityMedium,
+			Message:    "Deeply nested if statements (>" + fmt.Sprintf("%d", MaxNestedLoops) + " levels) - refactor using early returns",
+			Suggestion: "Use guard clauses and early returns to reduce nesting",
+		})
+	}
+
+	// Check for if true/false (WTF code)
+	if lit, ok := stmt.Cond.(*ast.Ident); ok {
+		if lit.Name == "true" || lit.Name == "false" {
+			pos := fset.Position(stmt.Pos())
+			issues = append(issues, Issue{
+				File:       filename,
+				Line:       pos.Line,
+				Column:     pos.Column,
+				Position:   pos,
+				Type:       "USELESS_CONDITION",
+				Severity:   SeverityHigh,
+				Message:    "Condition is always " + lit.Name + " - this is nonsense",
+				Suggestion: "Remove the condition or fix the logic",
+			})
+		}
+	}
+
+	// Check for empty else blocks
+	if stmt.Else != nil {
+		if block, ok := stmt.Else.(*ast.BlockStmt); ok && len(block.List) == 0 {
+			pos := fset.Position(stmt.Else.Pos())
+			issues = append(issues, Issue{
+				File:       filename,
+				Line:       pos.Line,
+				Column:     pos.Column,
+				Position:   pos,
+				Type:       "EMPTY_ELSE",
+				Severity:   SeverityLow,
+				Message:    "Empty else block - remove it",
+				Suggestion: "Remove unnecessary empty else block",
+			})
+		}
+	}
+
+	return issues
+}
+
+func (csa *CodeSmellAnalyzer) analyzeCall(call *ast.CallExpr, filename string, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	// Check for panic() calls (except in main, test files, or assertion libraries)
+	if ident, ok := call.Fun.(*ast.Ident); ok {
+		if ident.Name == "panic" &&
+			!strings.Contains(filename, "_test.go") &&
+			!strings.Contains(filename, "main.go") &&
+			!strings.Contains(filename, "assert") &&
+			!strings.Contains(filename, "require") &&
+			!strings.Contains(filename, "testify") &&
+			!strings.Contains(filename, "mock") {
+			pos := fset.Position(call.Pos())
+			issues = append(issues, Issue{
+				File:       filename,
+				Line:       pos.Line,
+				Column:     pos.Column,
+				Position:   pos,
+				Type:       "PANIC_IN_LIBRARY",
+				Severity:   SeverityHigh,
+				Message:    "Using panic() in library code - return errors instead",
+				Suggestion: "Return an error instead of panicking",
+			})
+		}
+	}
+
+	// Check for time.Sleep (usually indicates bad design)
+	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+		if ident, ok := sel.X.(*ast.Ident); ok {
+			if ident.Name == "time" && sel.Sel.Name == "Sleep" {
+				pos := fset.Position(call.Pos())
+				issues = append(issues, Issue{
+					File:       filename,
+					Line:       pos.Line,
+					Column:     pos.Column,
+					Position:   pos,
+					Type:       "SLEEP_INSTEAD_OF_SYNC",
+					Severity:   SeverityMedium,
+					Message:    "Using time.Sleep - indicates poor synchronization",
+					Suggestion: "Use channels, wait groups, or proper synchronization",
+				})
+			}
+		}
+	}
+
+	return issues
+}
+
+func (csa *CodeSmellAnalyzer) analyzeLiteral(lit *ast.BasicLit, filename string, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	// Check for magic numbers
+	if lit.Kind == token.INT || lit.Kind == token.FLOAT {
+		value := lit.Value
+		// Ignore 0, 1, 2, 10, 100, 1000 as they're commonly acceptable
+		if value != "0" && value != "1" && value != "2" && value != "10" &&
+			value != "100" && value != "1000" && value != "1024" {
+			pos := fset.Position(lit.Pos())
+			issues = append(issues, Issue{
+				File:       filename,
+				Line:       pos.Line,
+				Column:     pos.Column,
+				Position:   pos,
+				Type:       "MAGIC_NUMBER",
+				Severity:   SeverityLow,
+				Message:    "Magic number " + value + " - use named constant",
+				Suggestion: "Define a named constant for this value",
+			})
+		}
+	}
+
+	// Check for hardcoded strings that look like config
+	if lit.Kind == token.STRING {
+		value := strings.Trim(lit.Value, "\"'`")
+		// Check for URLs, IPs, paths
+		if (strings.Contains(value, "http://") || strings.Contains(value, "https://") ||
+			strings.Contains(value, "localhost") || strings.Contains(value, "127.0.0.1") ||
+			strings.HasPrefix(value, "/")) && len(value) > 5 {
+			pos := fset.Position(lit.Pos())
+			issues = append(issues, Issue{
+				File:       filename,
+				Line:       pos.Line,
+				Column:     pos.Column,
+				Position:   pos,
+				Type:       "HARDCODED_CONFIG",
+				Severity:   SeverityMedium,
+				Message:    "Hardcoded configuration value: " + value,
+				Suggestion: "Move to configuration file or environment variable",
+			})
+		}
+	}
+
+	return issues
+}
+
+func (csa *CodeSmellAnalyzer) checkLazyErrorHandling(body *ast.BlockStmt, issues *[]Issue, filename string, fset *token.FileSet) {
+	ast.Inspect(body, func(n ast.Node) bool {
+		if ifStmt, ok := n.(*ast.IfStmt); ok {
+			// Check for if err != nil { return err } pattern without context
+			if csa.isLazyErrorCheck(ifStmt) {
+				// Check if it just returns err without wrapping
+				block := ifStmt.Body
+				if len(block.List) == 1 {
+					if ret, ok := block.List[0].(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
+						if ident, ok := ret.Results[0].(*ast.Ident); ok && ident.Name == "err" {
+							pos := fset.Position(ifStmt.Pos())
+							*issues = append(*issues, Issue{
+								File:       filename,
+								Line:       pos.Line,
+								Column:     pos.Column,
+								Position:   pos,
+								Type:       "LAZY_ERROR_HANDLING",
+								Severity:   SeverityLow,
+								Message:    "Error returned without context",
+								Suggestion: "Wrap error with context: fmt.Errorf(\"failed to X: %w\", err)",
+							})
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+}
+
+func (csa *CodeSmellAnalyzer) countIfNesting(stmt *ast.IfStmt, currentLevel int) int {
+	maxLevel := currentLevel + 1
+
+	// Check the then branch
+	if stmt.Body != nil {
+		ast.Inspect(stmt.Body, func(n ast.Node) bool {
+			if innerIf, ok := n.(*ast.IfStmt); ok && innerIf != stmt {
+				level := csa.countIfNesting(innerIf, currentLevel+1)
+				if level > maxLevel {
+					maxLevel = level
+				}
+			}
+			return true
+		})
+	}
+
+	// Check the else branch
+	if stmt.Else != nil {
+		if elseIf, ok := stmt.Else.(*ast.IfStmt); ok {
+			level := csa.countIfNesting(elseIf, currentLevel)
+			if level > maxLevel {
+				maxLevel = level
+			}
+		}
+	}
+
+	return maxLevel
+}
+
+func (csa *CodeSmellAnalyzer) isLazyErrorCheck(stmt *ast.IfStmt) bool {
+	if binExpr, ok := stmt.Cond.(*ast.BinaryExpr); ok {
+		if binExpr.Op == token.NEQ {
+			if ident, ok := binExpr.X.(*ast.Ident); ok && ident.Name == "err" {
+				if ident, ok := binExpr.Y.(*ast.Ident); ok && ident.Name == "nil" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
