@@ -1,0 +1,93 @@
+# Strict configuration - catches everything
+# Use for critical production code
+
+enabled: true
+exclude_paths:
+  - vendor/
+  - .git/
+  
+severity:
+  min_level: low
+
+# All analyzers enabled
+loop:
+  enabled: true
+  check_string_range: true
+  check_nested_loops: true
+  max_nested_depth: 2  # Strict limit
+  check_expensive_in_loops: true
+
+complexity:
+  enabled: true
+  max_cyclomatic_depth: 8  # Strict
+  max_cognitive_depth: 10  # Strict
+  check_recursion: true
+  max_recursion_depth: 5
+
+memory:
+  enabled: true
+  check_leaks: true
+  check_allocations: true
+  max_alloc_per_function: 50  # Strict
+  check_map_size: true
+  check_slice_capacity: true
+
+context:
+  enabled: true
+  check_position: true
+  check_background_usage: true
+  check_string_keys: true
+  check_cancellation: true
+
+channel:
+  enabled: true
+  check_deadlocks: true
+  check_unbuffered: true
+  check_multiple_close: true
+  check_send_on_closed: true
+  default_buffer_size: 1
+
+race_condition:
+  enabled: true
+  check_shared_variables: true
+  check_map_access: true
+  check_slice_append: true
+  check_global_modification: true
+
+error_handling:
+  enabled: true
+  check_ignored_errors: true
+  check_unchecked_errors: true  # Strict
+  check_error_wrapping: true
+  check_panic_usage: true
+  check_error_shadowing: true
+
+http_client:
+  enabled: true
+  check_timeouts: true
+  default_timeout_sec: 10  # Strict
+  check_default_client: true
+  check_body_close: true
+  check_connection_limits: true
+
+database:
+  enabled: true
+  check_sql_injection: true
+  check_n_plus_one: true
+  check_prepared_stmts: true
+  check_context_usage: true
+  max_queries_per_function: 3  # Strict
+
+testing:
+  enabled: true  # Check tests
+  min_coverage: 90.0  # Strict
+  require_benchmarks: true
+  require_examples: true
+  check_test_naming: true
+
+ai_patterns:
+  enabled: true  # Check for AI patterns
+  check_redundant_errors: true
+  check_overly_generic: true
+  check_missing_edge_cases: true
+  check_generic_comments: true

@@ -1,0 +1,88 @@
+# Configuration for web applications
+# Focuses on HTTP, database, and concurrency issues
+
+enabled: true
+exclude_paths:
+  - vendor/
+  - static/
+  - templates/
+  - migrations/
+  
+severity:
+  min_level: low
+
+# Web apps need good performance
+loop:
+  enabled: true
+  check_string_range: true
+  check_nested_loops: true
+  max_nested_depth: 3
+  check_expensive_in_loops: true
+
+complexity:
+  enabled: true
+  max_cyclomatic_depth: 12
+  max_cognitive_depth: 18
+  check_recursion: false
+
+memory:
+  enabled: true
+  check_leaks: true
+  check_allocations: true
+  max_alloc_per_function: 100
+  check_map_size: true
+  check_slice_capacity: true
+
+context:
+  enabled: true
+  check_position: true
+  check_background_usage: true
+  check_string_keys: true
+  check_cancellation: true
+
+channel:
+  enabled: true
+  check_deadlocks: true
+  check_unbuffered: true
+  check_multiple_close: true
+  check_send_on_closed: true
+  default_buffer_size: 10  # Web apps benefit from buffering
+
+race_condition:
+  enabled: true
+  check_shared_variables: true
+  check_map_access: true
+  check_slice_append: true
+  check_global_modification: true
+
+error_handling:
+  enabled: true
+  check_ignored_errors: true
+  check_unchecked_errors: false
+  check_error_wrapping: true
+  check_panic_usage: true
+  check_error_shadowing: true
+
+# Critical for web apps
+http_client:
+  enabled: true
+  check_timeouts: true
+  default_timeout_sec: 30
+  check_default_client: true
+  check_body_close: true
+  check_connection_limits: true
+
+# Critical for web apps
+database:
+  enabled: true
+  check_sql_injection: true
+  check_n_plus_one: true
+  check_prepared_stmts: true
+  check_context_usage: true
+  max_queries_per_function: 5
+
+testing:
+  enabled: false
+
+ai_patterns:
+  enabled: false

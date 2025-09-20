@@ -1,0 +1,95 @@
+# CI/CD configuration - быстрая проверка критических проблем
+enabled: true
+exclude_paths:
+  - "vendor/"
+  - ".git/"
+  - "testdata/"
+  - "examples/"
+exclude_types: []
+severity:
+  min_level: "medium"  # Только критические и важные проблемы
+
+# Анализ циклов - основные проверки
+loop:
+  enabled: true
+  check_string_range: false      # Отключено для скорости
+  check_nested_loops: true
+  max_nested_depth: 2           # Строго для CI
+  check_expensive_in_loops: true
+
+# Анализ сложности - критические проблемы
+complexity:
+  enabled: true
+  max_cyclomatic_depth: 10      # Допустимо для CI
+  max_cognitive_depth: 15       # Допустимо для CI
+  check_recursion: false        # Отключено из-за ложных срабатываний
+  max_recursion_depth: 10
+
+# Анализ памяти - критические утечки
+memory:
+  enabled: true
+  check_leaks: true
+  check_allocations: false      # Отключено для скорости
+  max_alloc_per_function: 200   # Больше лимит для CI
+  check_map_size: false
+  check_slice_capacity: false
+
+# Анализ контекста - только критические проблемы
+context:
+  enabled: true
+  check_position: true
+  check_background_usage: true  # Важно для продакшена
+  check_string_keys: false
+  check_cancellation: true
+
+# Анализ каналов - критические deadlocks
+channel:
+  enabled: true
+  check_deadlocks: true
+  check_unbuffered: false
+  check_multiple_close: true
+  check_send_on_closed: true
+  default_buffer_size: 1
+
+# Анализ race condition - только критические
+race_condition:
+  enabled: true
+  check_shared_variables: true
+  check_map_access: true
+  check_slice_append: false     # Может быть шумным
+  check_global_modification: true
+
+# Анализ обработки ошибок - критические проблемы
+error_handling:
+  enabled: true
+  check_ignored_errors: true
+  check_unchecked_errors: false  # Шумно для CI
+  check_error_wrapping: false
+  check_panic_usage: true        # Критично для продакшена
+  check_error_shadowing: true
+
+# Анализ HTTP клиентов - продакшен готовность
+http_client:
+  enabled: true
+  check_timeouts: true           # Критично для продакшена
+  default_timeout_sec: 30
+  check_default_client: true
+  check_body_close: true
+  check_connection_limits: false
+
+# Анализ базы данных - продакшен готовность
+database:
+  enabled: true
+  check_sql_injection: true      # Критично для безопасности
+  check_n_plus_one: true
+  check_prepared_stmts: true
+  check_context_usage: true
+  max_queries_per_function: 5
+
+# Анализ тестирования - отключен в CI основного кода
+testing:
+  enabled: false
+  min_coverage: 70.0
+  require_benchmarks: false
+  require_examples: false
+  check_test_naming: false
