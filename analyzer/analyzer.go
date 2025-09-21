@@ -5,7 +5,7 @@ import (
 	"go/token"
 )
 
-func Analyze(filename string, file *ast.File, fset *token.FileSet) []Issue {
+func Analyze(filename string, file *ast.File, fset *token.FileSet, projectPath string) []Issue {
 	var issues []Issue
 
 	analyzers := []Analyzer{
@@ -35,6 +35,10 @@ func Analyze(filename string, file *ast.File, fset *token.FileSet) []Issue {
 		NewRaceConditionAnalyzer(), // Race conditions detection
 		NewErrorHandlingAnalyzer(), // Error handling best practices
 		NewHTTPClientAnalyzer(),    // HTTP client configuration issues
+
+		// Security and dependency analyzers
+		NewPrivacyAnalyzer(),               // Privacy and security issues
+		NewDependencyAnalyzer(projectPath), // Dependency health and vulnerabilities
 	}
 
 	for _, analyzer := range analyzers {

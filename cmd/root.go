@@ -146,6 +146,8 @@ var listCmd = &cobra.Command{
 			{"CPUOptimizationAnalyzer", "Detects CPU-intensive operations"},
 			{"NetworkPatternsAnalyzer", "Finds network performance issues"},
 			{"SyncPoolAnalyzer", "Suggests sync.Pool optimizations"},
+			{"PrivacyAnalyzer", "Detects privacy issues and data leaks"},
+			{"DependencyAnalyzer", "Checks dependency health and vulnerabilities"},
 		}
 
 		fmt.Println("Available Analyzers:")
@@ -229,7 +231,7 @@ func outputJSON(target string, issues []analyzer.Issue) {
 	// Group issues by file for file stats
 	fileStats := make(map[string]int)
 	for _, issue := range issues {
-		fileStats[issue.File]++
+		fileStats[issue.Position.Filename]++
 	}
 
 	// Calculate summary
@@ -278,7 +280,7 @@ func outputHuman(target string, issues []analyzer.Issue) {
 			severityIcon := getSeverityIcon(issue.Severity)
 			// Standard compiler error format that all IDEs understand
 			sb.WriteString(fmt.Sprintf("%s:%d:%d: %s [%s] %s - %s\n",
-				issue.File, issue.Line, issue.Column,
+				issue.Position.Filename, issue.Position.Line, issue.Position.Column,
 				severityIcon, issue.Type, issue.Message, issue.Suggestion))
 		}
 		fmt.Print(sb.String())
@@ -307,7 +309,7 @@ func outputHuman(target string, issues []analyzer.Issue) {
 					severityIcon := getSeverityIcon(issue.Severity)
 					// Format: file:line:column - this format is clickable in most IDEs
 					sb.WriteString(fmt.Sprintf("  %s %s:%d:%d [%s]\n",
-						severityIcon, issue.File, issue.Line, issue.Column, issue.Type))
+						severityIcon, issue.Position.Filename, issue.Position.Line, issue.Position.Column, issue.Type))
 					sb.WriteString(fmt.Sprintf("     %s\n", issue.Message))
 					if issue.Suggestion != "" {
 						sb.WriteString(fmt.Sprintf("     💡 %s\n", issue.Suggestion))
@@ -338,51 +340,30 @@ func analyzeFile(filename string, config *Config) []analyzer.Issue {
 		return nil
 	}
 
-	var allIssues []analyzer.Issue
-
-	// Get all analyzers
-	analyzers := []analyzer.Analyzer{
-		analyzer.NewLoopAnalyzer(),
-		analyzer.NewStringConcatAnalyzer(),
-		analyzer.NewDeferAnalyzer(),
-		analyzer.NewDeferOptimizationAnalyzer(),
-		analyzer.NewSliceAnalyzer(),
-		analyzer.NewMapAnalyzer(),
-		analyzer.NewReflectionAnalyzer(),
-		analyzer.NewGoroutineAnalyzer(),
-		analyzer.NewInterfaceAnalyzer(),
-		analyzer.NewRegexAnalyzer(),
-		analyzer.NewTimeAnalyzer(),
-		analyzer.NewComplexityAnalyzer(),
-		analyzer.NewMemoryLeakAnalyzer(),
-		analyzer.NewTestCoverageAnalyzer(),
-		analyzer.NewDatabaseAnalyzer(),
-		analyzer.NewNilPtrAnalyzer(),
-		analyzer.NewCodeSmellAnalyzer(),
-		analyzer.NewAPIMisuseAnalyzer(),
-		analyzer.NewAIBullshitDetector(), // AI bullshit detector - the only AI analyzer we need
-		analyzer.NewContextAnalyzer(),
-		analyzer.NewChannelAnalyzer(),
-		analyzer.NewRaceConditionAnalyzer(),
-		analyzer.NewErrorHandlingAnalyzer(),
-		analyzer.NewHTTPClientAnalyzer(),
-		// Performance-critical analyzers
-		analyzer.NewGCPressureAnalyzer(),
-		analyzer.NewConcurrencyPatternsAnalyzer(),
-		analyzer.NewCPUOptimizationAnalyzer(),
-		analyzer.NewNetworkPatternsAnalyzer(),
-		analyzer.NewSyncPoolAnalyzer(),
+	// Get project path for dependency analyzer
+	projectPath := filepath.Dir(filename)
+	for {
+		goModPath := filepath.Join(projectPath, "go.mod")
+		if _, err := os.Stat(goModPath); err == nil {
+			break
+		}
+		parent := filepath.Dir(projectPath)
+		if parent == projectPath {
+			// Reached root, use original directory
+			projectPath = filepath.Dir(filename)
+			break
+		}
+		projectPath = parent
 	}
 
-	// Run all analyzers and filter by config
-	for _, a := range analyzers {
-		issues := a.Analyze(filename, node, fset)
+	// Use centralized Analyze function
+	issues := analyzer.Analyze(filename, node, fset, projectPath)
 
-		// Filter issues based on configuration
-		for _, issue := range issues {
-			if config.ShouldAnalyze(issue.Type) {
-				allIssues = append(allIssues, issue)
-			}
+	// Filter issues based on configuration
+	var allIssues []analyzer.Issue
+	for _, issue := range issues {
+		if config.ShouldAnalyze(issue.Type) {
+			allIssues = append(allIssues, issue)
 		}
 	}
 
@@ -504,6 +485,22 @@ func getAnalyzerGroups() []analyzerGroup {
 			Icon: "🧪",
 			Types: []string{"MISSING_TEST", "MISSING_EXAMPLE", "MISSING_BENCHMARK", "UNTESTED_EXPORT",
 				"UNTESTED_TYPE", "UNTESTED_ERROR", "UNTESTED_CONCURRENCY", "UNTESTED_IO_FUNCTION"},
+		},
+		{
+			Name: "Privacy & Security",
+			Icon: "🔒",
+			Types: []string{"PRIVACY_HARDCODED_SECRET", "PRIVACY_AWS_KEY", "PRIVACY_JWT_TOKEN",
+				"PRIVACY_EMAIL_PII", "PRIVACY_SSN_PII", "PRIVACY_CREDIT_CARD_PII",
+				"PRIVACY_LOGGING_SENSITIVE", "PRIVACY_PRINTING_SENSITIVE", "PRIVACY_EXPOSED_FIELD",
+				"PRIVACY_UNENCRYPTED_DB_WRITE", "PRIVACY_DIRECT_INPUT_TO_DB"},
+		},
+		{
+			Name: "Dependencies",
+			Icon: "📦",
+			Types: []string{"DEPENDENCY_DEPRECATED", "DEPENDENCY_VULNERABLE", "DEPENDENCY_OUTDATED",
+				"DEPENDENCY_CGO", "DEPENDENCY_UNSAFE", "DEPENDENCY_INTERNAL", "DEPENDENCY_INDIRECT",
+				"DEPENDENCY_LOCAL_REPLACE", "DEPENDENCY_NO_CHECKSUM", "DEPENDENCY_EMPTY_CHECKSUM",
+				"DEPENDENCY_VERSION_CONFLICT"},
 		},
 		{
 			Name:  "Other",
