@@ -75,7 +75,7 @@ type Strategy interface {
 		t.Fatal(err)
 	}
 
-	issues := Analyze("test.go", file, fset)
+	issues := Analyze("test.go", file, fset, ".")
 
 	// Verify various issue types are detected
 	expectedTypes := map[string]bool{
@@ -122,7 +122,7 @@ func TestAnalyze_EmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	issues := Analyze("test.go", file, fset)
+	issues := Analyze("test.go", file, fset, ".")
 
 	// Should handle empty file without crashing and return empty slice
 	if issues == nil {
@@ -205,7 +205,7 @@ type User struct {
 		t.Fatal(err)
 	}
 
-	issues := Analyze("test.go", file, fset)
+	issues := Analyze("test.go", file, fset, ".")
 
 	// Should detect various issues
 	hasNPlusOne := false
@@ -260,7 +260,7 @@ func Process(data []int) int {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Analyze("test.go", file, fset)
+		_ = Analyze("test.go", file, fset, ".")
 	}
 }
 
@@ -286,6 +286,6 @@ func (s *S) Method() {}`)
 		}
 
 		// Should not panic
-		_ = Analyze("test.go", file, fset)
+		_ = Analyze("test.go", file, fset, ".")
 	})
 }

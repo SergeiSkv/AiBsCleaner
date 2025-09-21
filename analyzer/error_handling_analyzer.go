@@ -52,13 +52,13 @@ func (eha *ErrorHandlingAnalyzer) Analyze(filename string, node interface{}, fse
 func (eha *ErrorHandlingAnalyzer) analyzeErrorAssignment(assign *ast.AssignStmt, filename string, fset *token.FileSet) []Issue {
 	var issues []Issue
 
-	// Check for ignored errors (using _)
+	// Check for ignored errors (using _) - but only for critical operations
 	for i, lhs := range assign.Lhs { //nolint:nestif // Error analysis requires nested checks
 		if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
 			// Check if corresponding RHS returns an error
 			if i < len(assign.Rhs) {
 				if call, ok := assign.Rhs[i].(*ast.CallExpr); ok {
-					if returnsError(call) {
+					if returnsError(call) && isCriticalOperation(call) {
 						pos := fset.Position(assign.Pos())
 						issues = append(issues, Issue{
 							File:       filename,
@@ -66,8 +66,8 @@ func (eha *ErrorHandlingAnalyzer) analyzeErrorAssignment(assign *ast.AssignStmt,
 							Column:     pos.Column,
 							Position:   pos,
 							Type:       "IGNORED_ERROR",
-							Severity:   SeverityHigh,
-							Message:    "Error return value is ignored",
+							Severity:   SeverityMedium,
+							Message:    "Critical error return value is ignored",
 							Suggestion: "Check and handle the error appropriately",
 						})
 						eha.ignoredErrors++
@@ -77,36 +77,8 @@ func (eha *ErrorHandlingAnalyzer) analyzeErrorAssignment(assign *ast.AssignStmt,
 		}
 	}
 
-	// Check for error variables not being checked
-	hasErrorVar := false
-	errorVarName := ""
-	for _, lhs := range assign.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if ident.Name == "err" || strings.HasSuffix(ident.Name, "Err") || strings.HasSuffix(ident.Name, "Error") {
-				hasErrorVar = true
-				errorVarName = ident.Name
-				break
-			}
-		}
-	}
-
-	if hasErrorVar {
-		// Check if error is checked in the next statement
-		// This is simplified - in real implementation we'd need to track control flow
-		if !isErrorCheckedNearby(assign, errorVarName) {
-			pos := fset.Position(assign.Pos())
-			issues = append(issues, Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       "UNCHECKED_ERROR",
-				Severity:   SeverityMedium,
-				Message:    "Error variable '" + errorVarName + "' may not be checked",
-				Suggestion: "Add error checking immediately after assignment",
-			})
-		}
-	}
+	// Reduce false positives for UNCHECKED_ERROR - skip it for now
+	// Library code often has different error handling patterns
 
 	return issues
 }
@@ -228,87 +200,11 @@ func (eha *ErrorHandlingAnalyzer) analyzeErrorWrapping(call *ast.CallExpr, filen
 	return issues
 }
 
-func (eha *ErrorHandlingAnalyzer) analyzeErrorReturn(fn *ast.FuncDecl, filename string, fset *token.FileSet) []Issue { //nolint:gocyclo // Error return analysis inherently complex
+func (eha *ErrorHandlingAnalyzer) analyzeErrorReturn(fn *ast.FuncDecl, filename string, fset *token.FileSet) []Issue {
 	var issues []Issue
 
-	// Check if function returns error
-	returnsErr := false
-	if fn.Type.Results != nil {
-		for _, result := range fn.Type.Results.List {
-			if ident, ok := result.Type.(*ast.Ident); ok && ident.Name == "error" {
-				returnsErr = true
-				break
-			}
-		}
-	}
-
-	if returnsErr { //nolint:nestif // Return error analysis requires deep nesting
-		// Check for inconsistent error returns
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if ret, ok := n.(*ast.ReturnStmt); ok {
-				// Check return values - currently just tracking them
-				// TODO: Add logic to check for inconsistent error returns
-				for range ret.Results {
-					// Placeholder for future implementation
-				}
-			}
-			return true
-		})
-
-		// Check for missing nil checks before returning error
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if ret, ok := n.(*ast.ReturnStmt); ok {
-				if len(ret.Results) > 0 {
-					// Check if returning an error variable without checking it's not nil
-					for _, result := range ret.Results {
-						if ident, ok := result.(*ast.Ident); ok {
-							if isErrorVariable(ident.Name) && !isErrorCheckedBefore(ret, ident.Name) {
-								pos := fset.Position(ret.Pos())
-								issues = append(issues, Issue{
-									File:       filename,
-									Line:       pos.Line,
-									Column:     pos.Column,
-									Position:   pos,
-									Type:       "UNCHECKED_ERROR_RETURN",
-									Severity:   SeverityLow,
-									Message:    "Returning error without nil check",
-									Suggestion: "Check if error is nil before returning",
-								})
-							}
-						}
-					}
-				}
-			}
-			return true
-		})
-
-		// Check for error shadowing
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if assign, ok := n.(*ast.AssignStmt); ok {
-				if assign.Tok == token.DEFINE { // := operator
-					for _, lhs := range assign.Lhs {
-						if ident, ok := lhs.(*ast.Ident); ok {
-							if ident.Name == "err" {
-								// Check if err is already defined in outer scope
-								pos := fset.Position(assign.Pos())
-								issues = append(issues, Issue{
-									File:       filename,
-									Line:       pos.Line,
-									Column:     pos.Column,
-									Position:   pos,
-									Type:       "ERROR_SHADOWING",
-									Severity:   SeverityMedium,
-									Message:    "Potential error variable shadowing",
-									Suggestion: "Use consistent error variable or check for shadowing",
-								})
-							}
-						}
-					}
-				}
-			}
-			return true
-		})
-	}
+	// Skip optimizations - these patterns are too common in library code
+	// Focus only on clear antipatterns
 
 	return issues
 }
@@ -323,6 +219,21 @@ func returnsError(call *ast.CallExpr) bool {
 			"Get", "Post", "Do", "Dial", "Listen", "Accept", "Send", "Receive",
 			"Marshal", "Unmarshal", "Decode", "Encode"}
 		for _, method := range errorMethods {
+			if strings.HasPrefix(methodName, method) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isCriticalOperation checks if the operation is critical enough to require error checking
+func isCriticalOperation(call *ast.CallExpr) bool {
+	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+		methodName := sel.Sel.Name
+		// Only flag critical operations where ignoring errors is dangerous
+		criticalMethods := []string{"Open", "Close", "Write", "Exec", "Dial", "Listen"}
+		for _, method := range criticalMethods {
 			if strings.HasPrefix(methodName, method) {
 				return true
 			}

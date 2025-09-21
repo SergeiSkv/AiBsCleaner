@@ -8,6 +8,7 @@ import (
 func Analyze(filename string, file *ast.File, fset *token.FileSet, projectPath string) []Issue {
 	var issues []Issue
 
+	// Per-file analyzers
 	analyzers := []Analyzer{
 		NewLoopAnalyzer(),
 		NewStringConcatAnalyzer(),
@@ -36,9 +37,9 @@ func Analyze(filename string, file *ast.File, fset *token.FileSet, projectPath s
 		NewErrorHandlingAnalyzer(), // Error handling best practices
 		NewHTTPClientAnalyzer(),    // HTTP client configuration issues
 
-		// Security and dependency analyzers
-		NewPrivacyAnalyzer(),               // Privacy and security issues
-		NewDependencyAnalyzer(projectPath), // Dependency health and vulnerabilities
+		// Security analyzers
+		NewPrivacyAnalyzer(), // Privacy and security issues
+		// NOTE: DependencyAnalyzer removed from here - should be run once per project!
 	}
 
 	for _, analyzer := range analyzers {
@@ -46,4 +47,11 @@ func Analyze(filename string, file *ast.File, fset *token.FileSet, projectPath s
 	}
 
 	return issues
+}
+
+// AnalyzeDependencies runs dependency analysis once for the entire project
+func AnalyzeDependencies(projectPath string) []Issue {
+	analyzer := NewDependencyAnalyzer(projectPath)
+	// Use empty filename since this is project-level analysis
+	return analyzer.Analyze("go.mod", nil, nil)
 }
