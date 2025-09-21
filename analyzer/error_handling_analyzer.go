@@ -53,11 +53,13 @@ func (eha *ErrorHandlingAnalyzer) analyzeErrorAssignment(assign *ast.AssignStmt,
 	var issues []Issue
 
 	// Check for ignored errors (using _) - but only for critical operations
-	for i, lhs := range assign.Lhs { //nolint:nestif // Error analysis requires nested checks
+	for _, lhs := range assign.Lhs { //nolint:nestif // Error analysis requires nested checks
 		if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
-			// Check if corresponding RHS returns an error
-			if i < len(assign.Rhs) {
-				if call, ok := assign.Rhs[i].(*ast.CallExpr); ok {
+			// For multi-return functions like os.Open which return (file, error),
+			// there's only one RHS expression but multiple LHS variables
+			// Check all RHS expressions for critical operations
+			for _, rhs := range assign.Rhs {
+				if call, ok := rhs.(*ast.CallExpr); ok {
 					if returnsError(call) && isCriticalOperation(call) {
 						pos := fset.Position(assign.Pos())
 						issues = append(issues, Issue{
@@ -71,6 +73,7 @@ func (eha *ErrorHandlingAnalyzer) analyzeErrorAssignment(assign *ast.AssignStmt,
 							Suggestion: "Check and handle the error appropriately",
 						})
 						eha.ignoredErrors++
+						break // Only report once per assignment
 					}
 				}
 			}

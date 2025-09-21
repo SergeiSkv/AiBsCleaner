@@ -278,7 +278,7 @@ func (c *Config) ShouldAnalyze(issueType string) bool {
 		return c.Analyzers.Database.Enabled
 
 	// NilPtr analyzer
-	case "NIL_CHECK", "PANIC_RISK", "NIL_RETURN", "PANIC_IN_LIBRARY",
+	case "NIL_CHECK", "PANIC_RISK", "NIL_RETURN",
 		"POTENTIAL_NIL_DEREF", "POTENTIAL_NIL_INDEX", "RANGE_OVER_NIL", "NIL_METHOD_CALL",
 		"UNCHECKED_PARAM":
 		return c.Analyzers.NilPtr.Enabled
@@ -286,7 +286,7 @@ func (c *Config) ShouldAnalyze(issueType string) bool {
 	// Code smell analyzer
 	case "LONG_FUNCTION", "TOO_MANY_PARAMS", "DUPLICATE_CODE", "UNUSED_PARAM", "TODO_FIXME",
 		"SINGLE_LETTER_VAR", "ARROW_ANTIPATTERN", "HARDCODED_CONFIG",
-		"CONSOLE_LOG_DEBUGGING", "UNTESTED_COMPLEX_FUNCTION":
+		"CONSOLE_LOG_DEBUGGING", "UNTESTED_COMPLEX_FUNCTION", "PANIC_IN_LIBRARY":
 		return c.Analyzers.CodeSmell.Enabled
 
 	// API misuse analyzer

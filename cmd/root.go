@@ -178,6 +178,12 @@ func analyzeTarget(target string, config *Config) []analyzer.Issue {
 		return nil
 	}
 	var allIssues []analyzer.Issue
+	var filesAnalyzed int
+	var totalLines int
+
+	// Run dependency analysis ONCE for the entire project
+	depIssues := analyzer.AnalyzeDependencies(target)
+	allIssues = append(allIssues, depIssues...)
 
 	err := filepath.Walk(target, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -214,6 +220,14 @@ func analyzeTarget(target string, config *Config) []analyzer.Issue {
 			return nil
 		}
 
+		// Count the file
+		filesAnalyzed++
+
+		// Count lines in file
+		if content, err := os.ReadFile(path); err == nil {
+			totalLines += strings.Count(string(content), "\n") + 1
+		}
+
 		issues := analyzeFile(path, config)
 		allIssues = append(allIssues, issues...)
 
@@ -223,6 +237,9 @@ func analyzeTarget(target string, config *Config) []analyzer.Issue {
 	if err != nil {
 		log.Fatalf("Error analyzing target: %v", err)
 	}
+
+	// Print statistics
+	fmt.Fprintf(os.Stderr, "\n📊 Analyzed %d files (%d lines of code)\n", filesAnalyzed, totalLines)
 
 	return allIssues
 }

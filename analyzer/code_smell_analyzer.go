@@ -257,24 +257,55 @@ func (csa *CodeSmellAnalyzer) analyzeCall(call *ast.CallExpr, filename string, f
 
 	// Check for panic() calls (except in main, test files, or assertion libraries)
 	if ident, ok := call.Fun.(*ast.Ident); ok {
-		if ident.Name == "panic" &&
-			!strings.Contains(filename, "_test.go") &&
-			!strings.Contains(filename, "main.go") &&
-			!strings.Contains(filename, "assert") &&
-			!strings.Contains(filename, "require") &&
-			!strings.Contains(filename, "testify") &&
-			!strings.Contains(filename, "mock") {
-			pos := fset.Position(call.Pos())
-			issues = append(issues, Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       "PANIC_IN_LIBRARY",
-				Severity:   SeverityHigh,
-				Message:    "Using panic() in library code - return errors instead",
-				Suggestion: "Return an error instead of panicking",
-			})
+		if ident.Name == "panic" {
+			// Skip test files and assertion libraries
+			skipReasons := []string{}
+			if strings.Contains(filename, "_test.go") {
+				skipReasons = append(skipReasons, "_test.go")
+			}
+			if strings.Contains(filename, "/test/") {
+				skipReasons = append(skipReasons, "/test/")
+			}
+			if strings.Contains(filename, "assert") {
+				skipReasons = append(skipReasons, "assert")
+			}
+			if strings.Contains(filename, "require") {
+				skipReasons = append(skipReasons, "require")
+			}
+			if strings.Contains(filename, "testify") {
+				skipReasons = append(skipReasons, "testify")
+			}
+			if strings.Contains(filename, "mock") {
+				skipReasons = append(skipReasons, "mock")
+			}
+			if strings.HasSuffix(filename, "/main.go") {
+				skipReasons = append(skipReasons, "/main.go")
+			}
+			if strings.Contains(filename, "/cmd/") {
+				skipReasons = append(skipReasons, "/cmd/")
+			}
+			if strings.Contains(filename, "/examples/") {
+				skipReasons = append(skipReasons, "/examples/")
+			}
+
+			// fmt.Printf("DEBUG: Found panic in %s, skip reasons: %v\n", filename, skipReasons)
+
+			if len(skipReasons) == 0 {
+				pos := fset.Position(call.Pos())
+				// fmt.Printf("DEBUG: Creating PANIC_IN_LIBRARY issue for %s:%d\n", filename, pos.Line)
+				issue := Issue{
+					File:       filename,
+					Line:       pos.Line,
+					Column:     pos.Column,
+					Position:   pos,
+					Type:       "PANIC_IN_LIBRARY",
+					Severity:   SeverityHigh,
+					Message:    "Using panic() in library code - return errors instead",
+					Suggestion: "Return an error instead of panicking",
+				}
+				issues = append(issues, issue)
+				// fmt.Printf("DEBUG: Issues count after append: %d\n", len(issues))
+			}
 		}
 	}
 
@@ -297,6 +328,7 @@ func (csa *CodeSmellAnalyzer) analyzeCall(call *ast.CallExpr, filename string, f
 		}
 	}
 
+	// fmt.Printf("DEBUG: analyzeCall returning %d issues\n", len(issues))
 	return issues
 }
 
