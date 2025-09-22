@@ -11,15 +11,15 @@ const (
 )
 
 type Issue struct {
-	File        string
-	Line        int
-	Column      int
-	Position    token.Position
-	Type        string
-	Severity    Severity
-	Message     string
-	Suggestion  string
-	Code        string
+	File       string
+	Line       int
+	Column     int
+	Position   token.Position
+	Type       string
+	Severity   Severity
+	Message    string
+	Suggestion string
+	Code       string
 }
 
 type Analyzer interface {

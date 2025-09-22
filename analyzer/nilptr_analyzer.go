@@ -7,15 +7,15 @@ import (
 )
 
 type NilPtrAnalyzer struct {
-	checkedVars   map[string]bool
-	assignedVars  map[string]bool
+	checkedVars     map[string]bool
+	assignedVars    map[string]bool
 	functionReturns map[string][]bool // Track which return values can be nil
 }
 
 func NewNilPtrAnalyzer() *NilPtrAnalyzer {
 	return &NilPtrAnalyzer{
-		checkedVars:    make(map[string]bool, 50),
-		assignedVars:   make(map[string]bool, 50),
+		checkedVars:     make(map[string]bool, 50),
+		assignedVars:    make(map[string]bool, 50),
 		functionReturns: make(map[string][]bool, 50),
 	}
 }
@@ -60,7 +60,7 @@ func (npa *NilPtrAnalyzer) Analyze(filename string, node interface{}, fset *toke
 
 func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fset *token.FileSet) []Issue {
 	var issues []Issue
-	
+
 	if fn.Body == nil {
 		return issues
 	}
@@ -68,10 +68,10 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 	// Track nil checks and assignments within function scope
 	localChecked := make(map[string]bool, 10)
 	localAssigned := make(map[string]bool, 10)
-	
+
 	// Track type switch assignments to avoid flagging them as unchecked type assertions
 	typeSwitchAssignments := make(map[*ast.AssignStmt]bool)
-	
+
 	// First, identify all type switch assignments
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if typeSwitch, ok := n.(*ast.TypeSwitchStmt); ok {
@@ -83,15 +83,15 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 		}
 		return true
 	})
-	
+
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
 			issues = append(issues, npa.analyzeAssignment(node, localChecked, localAssigned, filename, fset, typeSwitchAssignments)...)
-			
+
 		case *ast.IfStmt:
 			npa.analyzeIfStatement(node, localChecked)
-			
+
 		case *ast.SelectorExpr:
 			// Check for potential nil dereference
 			if ident, ok := node.X.(*ast.Ident); ok {
@@ -109,7 +109,7 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 					})
 				}
 			}
-			
+
 		case *ast.IndexExpr:
 			// Check for nil map/slice access
 			if ident, ok := node.X.(*ast.Ident); ok {
@@ -127,7 +127,7 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 					})
 				}
 			}
-			
+
 		case *ast.RangeStmt:
 			// Check for range over nil
 			if ident, ok := node.X.(*ast.Ident); ok {
@@ -145,7 +145,7 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 					})
 				}
 			}
-			
+
 		case *ast.CallExpr:
 			// Check for method calls on potentially nil receivers
 			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
@@ -165,7 +165,7 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 					}
 				}
 			}
-			
+
 			// Check for unchecked error returns
 			issues = append(issues, npa.analyzeErrorReturn(node, fn.Body, filename, fset)...)
 		}
@@ -200,7 +200,7 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 
 func (npa *NilPtrAnalyzer) analyzeFuncLit(fn *ast.FuncLit, filename string, fset *token.FileSet) []Issue {
 	var issues []Issue
-	
+
 	if fn.Body == nil {
 		return issues
 	}
@@ -208,10 +208,10 @@ func (npa *NilPtrAnalyzer) analyzeFuncLit(fn *ast.FuncLit, filename string, fset
 	// Track nil checks and assignments within function literal scope
 	localChecked := make(map[string]bool, 10)
 	localAssigned := make(map[string]bool, 10)
-	
+
 	// Track type switch assignments to avoid flagging them as unchecked type assertions
 	typeSwitchAssignments := make(map[*ast.AssignStmt]bool)
-	
+
 	// First, identify all type switch assignments
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if typeSwitch, ok := n.(*ast.TypeSwitchStmt); ok {
@@ -223,7 +223,7 @@ func (npa *NilPtrAnalyzer) analyzeFuncLit(fn *ast.FuncLit, filename string, fset
 		}
 		return true
 	})
-	
+
 	// Analyze assignments in function literal
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if assignStmt, ok := n.(*ast.AssignStmt); ok {
@@ -231,7 +231,7 @@ func (npa *NilPtrAnalyzer) analyzeFuncLit(fn *ast.FuncLit, filename string, fset
 		}
 		return true
 	})
-	
+
 	return issues
 }
 
@@ -242,7 +242,7 @@ func (npa *NilPtrAnalyzer) analyzeAssignment(stmt *ast.AssignStmt, checked, assi
 		if ident, ok := lhs.(*ast.Ident); ok {
 			if i < len(stmt.Rhs) {
 				rhs := stmt.Rhs[i]
-				
+
 				// Check if assigning function call that returns error
 				if call, ok := rhs.(*ast.CallExpr); ok {
 					if npa.returnsError(call) {
@@ -261,13 +261,13 @@ func (npa *NilPtrAnalyzer) analyzeAssignment(stmt *ast.AssignStmt, checked, assi
 							})
 						}
 					}
-					
+
 					// Mark as potentially nil if function can return nil
 					if npa.canReturnNil(call) {
 						assigned[ident.Name] = true
 					}
 				}
-				
+
 				// Check for explicit nil assignment
 				if npa.isNilValue(rhs) {
 					assigned[ident.Name] = true
@@ -308,7 +308,7 @@ func (npa *NilPtrAnalyzer) analyzeIfStatement(stmt *ast.IfStmt, checked map[stri
 		if binExpr.Op == token.NEQ || binExpr.Op == token.EQL {
 			var varName string
 			isNilCheck := false
-			
+
 			if ident, ok := binExpr.X.(*ast.Ident); ok {
 				varName = ident.Name
 				if npa.isNilValue(binExpr.Y) {
@@ -320,7 +320,7 @@ func (npa *NilPtrAnalyzer) analyzeIfStatement(stmt *ast.IfStmt, checked map[stri
 					isNilCheck = true
 				}
 			}
-			
+
 			if isNilCheck && varName != "" {
 				checked[varName] = true
 			}
@@ -330,19 +330,19 @@ func (npa *NilPtrAnalyzer) analyzeIfStatement(stmt *ast.IfStmt, checked map[stri
 
 func (npa *NilPtrAnalyzer) analyzeErrorReturn(call *ast.CallExpr, body *ast.BlockStmt, filename string, fset *token.FileSet) []Issue {
 	var issues []Issue
-	
+
 	// Check if this is a function that returns an error
 	if !npa.returnsError(call) {
 		return issues
 	}
-	
+
 	// Check if error is properly handled
 	parent := npa.findParentStatement(call, body)
 	if parent != nil {
 		if assign, ok := parent.(*ast.AssignStmt); ok {
 			hasErrorCheck := false
 			var errorVar string
-			
+
 			// Find the error variable
 			for i, lhs := range assign.Lhs {
 				if ident, ok := lhs.(*ast.Ident); ok {
@@ -368,7 +368,7 @@ func (npa *NilPtrAnalyzer) analyzeErrorReturn(call *ast.CallExpr, body *ast.Bloc
 					}
 				}
 			}
-			
+
 			// Check if error is checked in subsequent statements
 			if errorVar != "" && errorVar != "_" {
 				hasErrorCheck = npa.hasErrorCheck(errorVar, body, assign)
@@ -388,7 +388,7 @@ func (npa *NilPtrAnalyzer) analyzeErrorReturn(call *ast.CallExpr, body *ast.Bloc
 			}
 		}
 	}
-	
+
 	return issues
 }
 
@@ -396,13 +396,13 @@ func (npa *NilPtrAnalyzer) analyzeFunctionReturns(fn *ast.FuncDecl) {
 	if fn.Type.Results == nil {
 		return
 	}
-	
+
 	canBeNil := []bool{}
 	for _, field := range fn.Type.Results.List {
 		// Check if return type can be nil (pointer, interface, map, slice, channel, function)
 		canBeNil = append(canBeNil, npa.canTypeBeNil(field.Type))
 	}
-	
+
 	npa.functionReturns[fn.Name.Name] = canBeNil
 }
 
@@ -432,7 +432,7 @@ func (npa *NilPtrAnalyzer) canReturnNil(call *ast.CallExpr) bool {
 			"http": {"Get", "Post", "NewRequest"},
 			"sql":  {"Open"},
 		}
-		
+
 		if ident, ok := sel.X.(*ast.Ident); ok {
 			if funcs, exists := nilReturnFuncs[ident.Name]; exists {
 				for _, fn := range funcs {
@@ -443,7 +443,7 @@ func (npa *NilPtrAnalyzer) canReturnNil(call *ast.CallExpr) bool {
 			}
 		}
 	}
-	
+
 	// Check if function is known to return pointer/interface
 	if ident, ok := call.Fun.(*ast.Ident); ok {
 		if returns, exists := npa.functionReturns[ident.Name]; exists {
@@ -454,14 +454,14 @@ func (npa *NilPtrAnalyzer) canReturnNil(call *ast.CallExpr) bool {
 			}
 		}
 	}
-	
+
 	return false
 }
 
 func (npa *NilPtrAnalyzer) canTypeBeNil(expr ast.Expr) bool {
 	switch expr.(type) {
-	case *ast.StarExpr, *ast.InterfaceType, *ast.MapType, 
-	     *ast.ArrayType, *ast.ChanType, *ast.FuncType:
+	case *ast.StarExpr, *ast.InterfaceType, *ast.MapType,
+		*ast.ArrayType, *ast.ChanType, *ast.FuncType:
 		return true
 	case *ast.Ident:
 		// Could be an interface or other nilable type
@@ -478,14 +478,14 @@ func (npa *NilPtrAnalyzer) returnsError(call *ast.CallExpr) bool {
 			"Get", "Post", "Do", "Query", "Exec", "Scan",
 			"Decode", "Encode", "Marshal", "Unmarshal",
 		}
-		
+
 		for _, fn := range errorFuncs {
 			if strings.Contains(sel.Sel.Name, fn) {
 				return true
 			}
 		}
 	}
-	
+
 	return false
 }
 
@@ -521,24 +521,24 @@ func (npa *NilPtrAnalyzer) hasErrorCheck(errorVar string, body *ast.BlockStmt, a
 			foundAfter = true
 			continue
 		}
-		
+
 		if !foundAfter {
 			continue
 		}
-		
+
 		// Check if this statement checks the error
 		if ifStmt, ok := stmt.(*ast.IfStmt); ok {
 			if npa.checksVariable(ifStmt.Cond, errorVar) {
 				return true
 			}
 		}
-		
+
 		// If error is used in any other way before checking, it's dangerous
 		if npa.usesVariable(stmt, errorVar) {
 			return false
 		}
 	}
-	
+
 	return false
 }
 

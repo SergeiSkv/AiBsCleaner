@@ -1,3 +1,8 @@
+//go:build ignor
+// +build ignore
+
+
+package benchma
 package benchmark
 
 import (

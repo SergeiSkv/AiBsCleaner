@@ -8,9 +8,9 @@ import (
 )
 
 type DatabaseAnalyzer struct {
-	queries       []QueryInfo
-	transactions  []TransactionInfo
-	connections   map[string]ConnectionInfo
+	queries      []QueryInfo
+	transactions []TransactionInfo
+	connections  map[string]ConnectionInfo
 }
 
 type QueryInfo struct {
@@ -22,17 +22,17 @@ type QueryInfo struct {
 }
 
 type TransactionInfo struct {
-	Location  token.Position
-	HasCommit bool
+	Location    token.Position
+	HasCommit   bool
 	HasRollback bool
-	InLoop    bool
+	InLoop      bool
 }
 
 type ConnectionInfo struct {
-	Location   token.Position
-	IsClosed   bool
-	IsPooled   bool
-	MaxConns   int
+	Location token.Position
+	IsClosed bool
+	IsPooled bool
+	MaxConns int
 }
 
 func NewDatabaseAnalyzer() *DatabaseAnalyzer {
@@ -80,7 +80,7 @@ func (da *DatabaseAnalyzer) Analyze(filename string, node interface{}, fset *tok
 func (da *DatabaseAnalyzer) analyzeCall(call *ast.CallExpr, fset *token.FileSet) {
 	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 		methodName := sel.Sel.Name
-		
+
 		// Check for database query methods
 		queryMethods := []string{"Query", "QueryRow", "QueryContext", "Exec", "ExecContext", "Prepare"}
 		for _, method := range queryMethods {
@@ -99,7 +99,7 @@ func (da *DatabaseAnalyzer) analyzeCall(call *ast.CallExpr, fset *token.FileSet)
 
 func (da *DatabaseAnalyzer) analyzeFunctionDB(fn *ast.FuncDecl, filename string, fset *token.FileSet) []Issue {
 	var issues []Issue
-	
+
 	if fn.Body == nil {
 		return issues
 	}
@@ -118,7 +118,7 @@ func (da *DatabaseAnalyzer) analyzeFunctionDB(fn *ast.FuncDecl, filename string,
 				// Check for database operations
 				if da.isDatabaseCall(sel) {
 					queryCount++
-					
+
 					// Check for N+1 problem
 					if da.isInLoop(node) {
 						pos := fset.Position(node.Pos())
@@ -177,7 +177,7 @@ func (da *DatabaseAnalyzer) analyzeFunctionDB(fn *ast.FuncDecl, filename string,
 				// Check for transactions
 				if sel.Sel.Name == "Begin" || sel.Sel.Name == "BeginTx" {
 					hasTransaction = true
-					
+
 					// Check for missing rollback
 					if !da.hasRollback(fn.Body) {
 						pos := fset.Position(node.Pos())
@@ -197,7 +197,7 @@ func (da *DatabaseAnalyzer) analyzeFunctionDB(fn *ast.FuncDecl, filename string,
 				// Check for Prepare
 				if sel.Sel.Name == "Prepare" || sel.Sel.Name == "PrepareContext" {
 					hasPreparedStmt = true
-					
+
 					// Check if prepared statement is closed
 					if !da.hasPreparedStmtClose(fn.Body) {
 						pos := fset.Position(node.Pos())
@@ -375,7 +375,7 @@ func (da *DatabaseAnalyzer) analyzeQueryPattern(query string, filename string, f
 	var issues []Issue
 	upperQuery := strings.ToUpper(query)
 
-	// Check for SELECT * 
+	// Check for SELECT *
 	if strings.Contains(upperQuery, "SELECT *") {
 		issues = append(issues, Issue{
 			File:       filename,
@@ -390,8 +390,8 @@ func (da *DatabaseAnalyzer) analyzeQueryPattern(query string, filename string, f
 	}
 
 	// Check for missing LIMIT in SELECT
-	if strings.Contains(upperQuery, "SELECT") && !strings.Contains(upperQuery, "LIMIT") && 
-	   !strings.Contains(upperQuery, "COUNT(") && !strings.Contains(upperQuery, "WHERE") {
+	if strings.Contains(upperQuery, "SELECT") && !strings.Contains(upperQuery, "LIMIT") &&
+		!strings.Contains(upperQuery, "COUNT(") && !strings.Contains(upperQuery, "WHERE") {
 		issues = append(issues, Issue{
 			File:       filename,
 			Line:       fset.Position(pos).Line,
@@ -443,7 +443,7 @@ func (da *DatabaseAnalyzer) isDatabaseCall(sel *ast.SelectorExpr) bool {
 		"Exec", "ExecContext", "Prepare", "PrepareContext",
 		"Begin", "BeginTx", "Commit", "Rollback",
 	}
-	
+
 	for _, method := range dbMethods {
 		if sel.Sel.Name == method {
 			return true
@@ -470,7 +470,7 @@ func (da *DatabaseAnalyzer) hasSQLInjectionRisk(call *ast.CallExpr) bool {
 				return true
 			}
 		}
-		
+
 		// Check for fmt.Sprintf in query
 		if callExpr, ok := call.Args[0].(*ast.CallExpr); ok {
 			if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
@@ -569,7 +569,7 @@ func (da *DatabaseAnalyzer) countSimilarQueries(queries []QueryInfo) int {
 	for _, q := range queries {
 		typeCount[q.Type]++
 	}
-	
+
 	maxCount := 0
 	for _, count := range typeCount {
 		if count > maxCount {

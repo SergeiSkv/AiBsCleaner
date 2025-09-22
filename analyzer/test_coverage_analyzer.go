@@ -127,9 +127,9 @@ func (tca *TestCoverageAnalyzer) collectTests(node ast.Node) {
 				// Extract function name being tested
 				testedFunc := strings.TrimPrefix(name, "Test")
 				tca.tests[testedFunc] = true
-				
+
 				// Also check for lowercase version
-				tca.tests[strings.ToLower(testedFunc[:1]) + testedFunc[1:]] = true
+				tca.tests[strings.ToLower(testedFunc[:1])+testedFunc[1:]] = true
 			} else if strings.HasPrefix(name, "Benchmark") {
 				testedFunc := strings.TrimPrefix(name, "Benchmark")
 				tca.tests[testedFunc] = true
@@ -249,8 +249,8 @@ func (tca *TestCoverageAnalyzer) hasPerformanceCriticalOperations(fn *ast.FuncDe
 		case *ast.CallExpr:
 			if ident, ok := node.Fun.(*ast.Ident); ok {
 				// Check for performance-critical operations
-				if ident.Name == "sort" || ident.Name == "copy" || 
-				   strings.Contains(ident.Name, "Search") {
+				if ident.Name == "sort" || ident.Name == "copy" ||
+					strings.Contains(ident.Name, "Search") {
 					critical = true
 				}
 			}
@@ -275,7 +275,7 @@ func (tca *TestCoverageAnalyzer) hasPerformanceCriticalOperations(fn *ast.FuncDe
 }
 
 func (tca *TestCoverageAnalyzer) hasBenchmark(funcName string) bool {
-	return tca.tests["Benchmark" + funcName]
+	return tca.tests["Benchmark"+funcName]
 }
 
 func (tca *TestCoverageAnalyzer) checkExampleCoverage(node ast.Node, filename string, fset *token.FileSet) []Issue {
@@ -312,5 +312,5 @@ func (tca *TestCoverageAnalyzer) isPublicAPI(fn *ast.FuncDecl) bool {
 }
 
 func (tca *TestCoverageAnalyzer) hasExample(funcName string) bool {
-	return tca.tests["Example" + funcName]
+	return tca.tests["Example"+funcName]
 }
