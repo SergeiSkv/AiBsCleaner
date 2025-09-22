@@ -37,6 +37,7 @@ func (da *DeferAnalyzer) Analyze(filename string, node interface{}, fset *token.
 					Severity:   SeverityHigh,
 					Message:    "defer statement in loop will only execute when function returns, may cause resource leak",
 					Suggestion: "Extract loop body to a separate function or handle cleanup manually",
+					CanBeFixed: false, // Too complex for automatic fix
 				})
 			}
 		case *ast.RangeStmt:
@@ -51,6 +52,7 @@ func (da *DeferAnalyzer) Analyze(filename string, node interface{}, fset *token.
 					Severity:   SeverityHigh,
 					Message:    "defer statement in loop will only execute when function returns, may cause resource leak",
 					Suggestion: "Extract loop body to a separate function or handle cleanup manually",
+					CanBeFixed: false, // Too complex for automatic fix
 				})
 			}
 		}

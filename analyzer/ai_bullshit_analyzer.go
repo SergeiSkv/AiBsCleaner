@@ -50,7 +50,7 @@ func (a *AIBullshitAnalyzer) Analyze(filename string, node interface{}, fset *to
 	return issues
 }
 
-// AI часто создает over-engineered решения для простых задач
+// AI often creates over-engineered solutions for simple tasks
 func (a *AIBullshitAnalyzer) checkOverEngineering(fn *ast.FuncDecl, fset *token.FileSet) []Issue {
 	var issues []Issue
 	pos := fset.Position(fn.Pos())
@@ -61,16 +61,16 @@ func (a *AIBullshitAnalyzer) checkOverEngineering(fn *ast.FuncDecl, fset *token.
 
 	funcName := fn.Name.Name
 
-	// Проверяем паттерны over-engineering
-	overEngineeredPatterns := []string{
+	// Check for design patterns that might be overused for simple tasks
+	designPatterns := []string{
 		"Factory", "Strategy", "Observer", "Visitor", "AbstractFactory",
 		"Builder", "Singleton", "Adapter", "Bridge", "Composite",
 		"Decorator", "Facade", "Flyweight", "Proxy", "Command",
 	}
 
-	for _, pattern := range overEngineeredPatterns {
+	for _, pattern := range designPatterns {
 		if strings.Contains(funcName, pattern) {
-			// Если функция простая (мало строк), но использует сложные паттерны
+			// If function is simple (few lines) but uses complex patterns
 			if len(fn.Body.List) < 5 {
 				issues = append(
 					issues, Issue{
@@ -92,7 +92,7 @@ func (a *AIBullshitAnalyzer) checkOverEngineering(fn *ast.FuncDecl, fset *token.
 	return issues
 }
 
-// Проверяем ненужную сложность (AI любит усложнять)
+// Check unnecessary complexity (AI loves to overcomplicate)
 func (a *AIBullshitAnalyzer) checkUnnecessaryComplexity(fn *ast.FuncDecl, fset *token.FileSet) []Issue {
 	var issues []Issue
 	pos := fset.Position(fn.Pos())
@@ -101,15 +101,15 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryComplexity(fn *ast.FuncDecl, fset *
 		return issues
 	}
 
-	// AI часто создает функции с излишней сложностью для простых задач
-	// Например: 30 строк кода для проверки четности числа
+	// AI often creates functions with excessive complexity for simple tasks
+	// Example: 30 lines of code to check if number is even
 	if strings.Contains(fn.Name.Name, "Check") || strings.Contains(fn.Name.Name, "Validate") {
 		if len(fn.Body.List) > 20 {
-			// Проверяем, не слишком ли сложно для простой проверки
+			// Check if it's too complex for simple validation
 			hasSimpleLogic := false
 			ast.Inspect(
 				fn.Body, func(n ast.Node) bool {
-					// Ищем простые операции (% == != < > && ||)
+					// Look for simple operations (% == != < > && ||)
 					if binExpr, ok := n.(*ast.BinaryExpr); ok {
 						op := binExpr.Op.String()
 						if op == "%" || op == "==" || op == "!=" || op == "<" || op == ">" {
@@ -141,7 +141,7 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryComplexity(fn *ast.FuncDecl, fset *
 	return issues
 }
 
-// Специфические AI паттерны
+// AI-specific patterns
 func (a *AIBullshitAnalyzer) checkAIPatterns(fn *ast.FuncDecl, fset *token.FileSet) []Issue {
 	var issues []Issue
 	pos := fset.Position(fn.Pos())
@@ -150,19 +150,19 @@ func (a *AIBullshitAnalyzer) checkAIPatterns(fn *ast.FuncDecl, fset *token.FileS
 		return issues
 	}
 
-	// AI часто создает goroutine + channel для простых операций
+	// AI often creates goroutine + channel for simple operations
 	hasGoroutine := false
 	hasChannel := false
 
 	ast.Inspect(
 		fn.Body, func(n ast.Node) bool {
-			// Ищем goroutines
+			// Look for goroutines
 			if goStmt, ok := n.(*ast.GoStmt); ok {
 				_ = goStmt
 				hasGoroutine = true
 			}
 
-			// Ищем каналы
+			// Look for channels
 			if callExpr, ok := n.(*ast.CallExpr); ok {
 				if ident, ok := callExpr.Fun.(*ast.Ident); ok {
 					if ident.Name == "make" && len(callExpr.Args) > 0 {
@@ -177,7 +177,7 @@ func (a *AIBullshitAnalyzer) checkAIPatterns(fn *ast.FuncDecl, fset *token.FileS
 		},
 	)
 
-	// AI bullshit: goroutine + channel для сложения двух чисел
+	// AI bullshit: goroutine + channel for adding two numbers
 	if hasGoroutine && hasChannel && len(fn.Body.List) < 10 {
 		issues = append(
 			issues, Issue{
@@ -197,14 +197,14 @@ func (a *AIBullshitAnalyzer) checkAIPatterns(fn *ast.FuncDecl, fset *token.FileS
 	return issues
 }
 
-// AI любит ненужную рефлексию
+// AI loves unnecessary reflection
 func (a *AIBullshitAnalyzer) checkUnnecessaryReflection(call *ast.CallExpr, fset *token.FileSet) []Issue {
 	var issues []Issue
 	pos := fset.Position(call.Pos())
 
 	funcName := getFuncNameFromCall(call)
 
-	// Если используется reflection для простых операций
+	// If reflection is used for simple operations
 	if strings.Contains(funcName, "reflect.") {
 		reflectMethods := []string{"ValueOf", "TypeOf", "DeepEqual", "Select", "Call"}
 		for _, method := range reflectMethods {
@@ -229,14 +229,14 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryReflection(call *ast.CallExpr, fset
 	return issues
 }
 
-// AI создает ненужную абстракцию
+// AI creates unnecessary abstraction
 func (a *AIBullshitAnalyzer) checkOverAbstraction(call *ast.CallExpr, fset *token.FileSet) []Issue {
 	var issues []Issue
 	pos := fset.Position(call.Pos())
 
 	funcName := getFuncNameFromCall(call)
 
-	// AI bullshit: создание интерфейсов для всего
+	// AI bullshit: creating interfaces for everything
 	abstractionWords := []string{"Interface", "Abstract", "Factory", "Manager", "Handler", "Service", "Provider"}
 
 	for _, word := range abstractionWords {
@@ -260,7 +260,7 @@ func (a *AIBullshitAnalyzer) checkOverAbstraction(call *ast.CallExpr, fset *toke
 	return issues
 }
 
-// AI создает интерфейсы для всего
+// AI creates interfaces for everything
 func (a *AIBullshitAnalyzer) checkUnnecessaryInterfaces(gen *ast.GenDecl, fset *token.FileSet) []Issue {
 	var issues []Issue
 	pos := fset.Position(gen.Pos())
@@ -297,9 +297,9 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryInterfaces(gen *ast.GenDecl, fset *
 			}
 
 			if interfaceType, ok := typeSpec.Type.(*ast.InterfaceType); ok {
-				// Если интерфейс имеет только один метод и простое имя
+				// If interface has only one method and simple name
 				if len(interfaceType.Methods.List) == 1 {
-					// AI bullshit паттерны в именах интерфейсов
+					// AI bullshit patterns in interface names
 					bullshitPatterns := []string{"Provider", "Manager", "Handler", "Service"}
 
 					for _, pattern := range bullshitPatterns {

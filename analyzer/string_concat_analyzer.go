@@ -38,6 +38,7 @@ func (sca *StringConcatAnalyzer) Analyze(filename string, node interface{}, fset
 					Severity:   SeverityHigh,
 					Message:    "String concatenation in loop creates new string on each iteration",
 					Suggestion: "Use strings.Builder or bytes.Buffer for efficient string concatenation",
+					CanBeFixed: true,
 				})
 			}
 		case *ast.RangeStmt:
@@ -52,6 +53,7 @@ func (sca *StringConcatAnalyzer) Analyze(filename string, node interface{}, fset
 					Severity:   SeverityHigh,
 					Message:    "String concatenation in loop creates new string on each iteration",
 					Suggestion: "Use strings.Builder or bytes.Buffer for efficient string concatenation",
+					CanBeFixed: true,
 				})
 			}
 		}
@@ -71,15 +73,10 @@ func (sca *StringConcatAnalyzer) hasStringConcatenation(block *ast.BlockStmt) bo
 			if node.Tok == token.ADD_ASSIGN {
 				// Check if the left side looks like a string variable
 				for _, lhs := range node.Lhs {
-					if ident, ok := lhs.(*ast.Ident); ok {
-						// Common string variable names
-						name := strings.ToLower(ident.Name)
-						if name == "result" || name == "output" || name == "buf" ||
-							strings.Contains(name, "str") || strings.Contains(name, "msg") ||
-							strings.Contains(name, "text") || strings.Contains(name, "path") ||
-							strings.Contains(name, "url") || strings.Contains(name, "content") {
-							hasConcatenation = true
-						}
+					if _, ok := lhs.(*ast.Ident); ok {
+						// For += operations on any identifier with string values, assume it's string concatenation
+						// This is more aggressive detection to catch all string concatenations
+						hasConcatenation = true
 					}
 				}
 			}

@@ -211,7 +211,43 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	// Load .abcignore if exists
+	if ignorePatterns, err := loadIgnoreFile(".abcignore"); err == nil {
+		config.Paths.Exclude = append(config.Paths.Exclude, ignorePatterns...)
+	}
+
 	return config, nil
+}
+
+// loadIgnoreFile loads patterns from an ignore file like .gitignore
+func loadIgnoreFile(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var patterns []string
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		// Trim whitespace
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Convert glob patterns to simple excludes
+		// Remove trailing slashes and wildcards for simplicity
+		line = strings.TrimSuffix(line, "/")
+		line = strings.TrimSuffix(line, "*")
+		line = strings.TrimPrefix(line, "**/")
+
+		patterns = append(patterns, line)
+	}
+
+	return patterns, nil
 }
 
 // ShouldAnalyze checks if an issue type should be analyzed based on config

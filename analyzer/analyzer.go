@@ -27,8 +27,8 @@ func Analyze(filename string, file *ast.File, fset *token.FileSet, projectPath s
 		NewDatabaseAnalyzer(),
 		NewNilPtrAnalyzer(),
 		NewCodeSmellAnalyzer(),
-		NewAPIMisuseAnalyzer(),  // Детектит API ошибки типа pprof.StartCPUProfile(nil)
-		NewAIBullshitAnalyzer(), // Главный анализатор AI bullshit кода
+		NewAPIMisuseAnalyzer(),  // Detects API errors like pprof.StartCPUProfile(nil)
+		NewAIBullshitAnalyzer(), // Main AI bullshit code analyzer
 
 		// New analyzers for concurrent and error handling
 		NewContextAnalyzer(),       // Context misuse and leaks

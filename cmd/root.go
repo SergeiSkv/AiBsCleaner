@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/SergeiSkv/AiBsCleaner/analyzer"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/SergeiSkv/AiBsCleaner/analyzer"
+	"github.com/SergeiSkv/AiBsCleaner/database"
 )
 
 var (
@@ -20,7 +22,14 @@ var (
 	configPath string
 	compact    bool
 	verbose    bool
+	reportType string
+	logLevel   string
+	noCache    bool
+	clearCache bool
+	ignoreFile string
 	version    = "1.0.0"
+	logger     *slog.Logger
+	db         *database.DB
 )
 
 // JSONOutput represents the JSON structure for results
@@ -61,18 +70,43 @@ Perfect for CI/CD pipelines, code reviews, and keeping your codebase clean.`,
 
 		// Check if target exists
 		if _, err := os.Stat(target); os.IsNotExist(err) {
-			log.Fatalf("Path %s does not exist", target)
+			slog.Error("Path does not exist", "path", target)
+			os.Exit(1)
+		}
+
+		// Initialize database unless --no-cache is specified
+		if !noCache {
+			dbPath := filepath.Join(getProjectRoot(target), ".abc_cache.db")
+			var err error
+			db, err = database.New(dbPath)
+			if err != nil {
+				slog.Warn("Failed to open cache database", "error", err)
+				// Continue without cache
+			}
+			defer func() {
+				if db != nil {
+					db.Close()
+				}
+			}()
+
+			// Clear cache if requested
+			if clearCache && db != nil {
+				if err := db.ClearCache(); err != nil {
+					slog.Warn("Failed to clear cache", "error", err)
+				} else {
+					slog.Info("Cache cleared")
+				}
+			}
 		}
 
 		// Load configuration
 		config, err := LoadConfig(configPath)
 		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
+			slog.Error("Failed to load config", "error", err)
+			os.Exit(1)
 		}
 
-		if !jsonOutput && verbose {
-			fmt.Printf("🔍 Analyzing Go code in %s for performance issues...\n", target)
-		}
+		// Remove noisy logging during analysis
 
 		// Set compact mode from flag
 		if compact {
@@ -110,6 +144,45 @@ var versionCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("AiBsCleaner version %s\n", version)
 		fmt.Println("Stop AI bullshit, write performant Go!")
+	},
+}
+
+var statsCmd = &cobra.Command{
+	Use:   "stats",
+	Short: "Show cache statistics",
+	Long:  `Shows statistics about the cached analysis results.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		target := "."
+		if len(args) > 0 {
+			target = args[0]
+		}
+
+		dbPath := filepath.Join(getProjectRoot(target), ".abc_cache.db")
+		db, err := database.New(dbPath)
+		if err != nil {
+			slog.Error("Failed to open cache database", "error", err)
+			os.Exit(1)
+		}
+		defer db.Close()
+
+		stats, err := db.GetStats()
+		if err != nil {
+			slog.Error("Failed to get statistics", "error", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("📊 Cache Statistics:")
+		fmt.Println("====================")
+		fmt.Printf("Total files analyzed:  %d\n", stats["total_files"])
+		fmt.Printf("Total issues found:    %d\n", stats["total_issues"])
+		fmt.Printf("Ignored issues:        %d\n", stats["ignored_issues"])
+		fmt.Printf("Fixed issues:          %d\n", stats["fixed_issues"])
+		fmt.Printf("\n")
+		fmt.Printf("Cache location: %s\n", dbPath)
+
+		if fileInfo, err := os.Stat(dbPath); err == nil {
+			fmt.Printf("Cache size:     %.2f MB\n", float64(fileInfo.Size())/(1024*1024))
+		}
 	},
 }
 
@@ -163,10 +236,59 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Path to configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&compact, "compact", "", false, "Compact IDE-friendly output")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
+	rootCmd.PersistentFlags().StringVarP(&reportType, "report", "r", "terminal", "Report format: terminal, html, markdown, json, all")
+	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "", "info", "Log level: debug, info, warn, error")
+	rootCmd.PersistentFlags().BoolVar(&noCache, "no-cache", false, "Disable cache and re-analyze all files")
+	rootCmd.PersistentFlags().BoolVar(&clearCache, "clear-cache", false, "Clear the cache before analyzing")
+	rootCmd.PersistentFlags().StringVar(&ignoreFile, "ignore-file", ".abcignore", "Path to ignore file")
 
 	rootCmd.AddCommand(initConfigCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(statsCmd)
+
+	// Setup logger
+	cobra.OnInitialize(initLogger)
+}
+
+func initLogger() {
+	// Parse log level
+	var level slog.Level
+	switch strings.ToLower(logLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	// Configure handler based on output format
+	var handler slog.Handler
+	opts := &slog.HandlerOptions{
+		Level:     level,
+		AddSource: verbose,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Remove time, level, source - only show message and custom attrs
+			if a.Key == slog.TimeKey || a.Key == slog.LevelKey || a.Key == slog.SourceKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}
+
+	if jsonOutput {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+
+	logger = slog.New(handler)
+	slog.SetDefault(logger)
 }
 
 func Execute() error {
@@ -185,61 +307,79 @@ func analyzeTarget(target string, config *Config) []analyzer.Issue {
 	depIssues := analyzer.AnalyzeDependencies(target)
 	allIssues = append(allIssues, depIssues...)
 
-	err := filepath.Walk(target, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	err := filepath.Walk(
+		target, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
 
-		// Check exclusions for both files and directories
-		for _, exclude := range config.Paths.Exclude {
-			if strings.HasSuffix(exclude, ".go") {
-				// File pattern (e.g., "_test.go")
-				if !info.IsDir() && strings.HasSuffix(path, exclude) {
-					return nil
-				}
-			} else {
-				// Directory exclusion
-				// For directories, check if this is the excluded directory
-				if info.IsDir() && filepath.Base(path) == exclude {
-					return filepath.SkipDir
-				}
-				// For files, check if they're in an excluded directory
-				if !info.IsDir() && strings.Contains(path, string(filepath.Separator)+exclude+string(filepath.Separator)) {
-					return nil
+			// Check exclusions for both files and directories
+			for _, exclude := range config.Paths.Exclude {
+				// Clean the path for comparison
+				cleanPath := filepath.Clean(path)
+				cleanExclude := filepath.Clean(exclude)
+
+				if strings.HasSuffix(exclude, ".go") {
+					// File pattern (e.g., "_test.go")
+					if !info.IsDir() && strings.HasSuffix(cleanPath, exclude) {
+						return nil
+					}
+				} else {
+					// Check if path contains or matches the exclude pattern
+					// This handles both exact matches and subdirectory matches
+					if strings.Contains(cleanPath, cleanExclude) {
+						if info.IsDir() {
+							return filepath.SkipDir
+						}
+						return nil
+					}
+
+					// Also check base name matching for simple excludes
+					if filepath.Base(cleanPath) == exclude {
+						if info.IsDir() {
+							return filepath.SkipDir
+						}
+						return nil
+					}
 				}
 			}
-		}
 
-		// Skip non-Go files
-		if !info.IsDir() && !strings.HasSuffix(path, ".go") {
+			// Skip non-Go files
+			if !info.IsDir() && !strings.HasSuffix(path, ".go") {
+				return nil
+			}
+
+			// Skip directories (we only analyze files)
+			if info.IsDir() {
+				return nil
+			}
+
+			// Count the file
+			filesAnalyzed++
+
+			// Count lines in file
+			if content, err := os.ReadFile(path); err == nil {
+				totalLines += strings.Count(string(content), "\n") + 1
+			}
+
+			issues := analyzeFile(path, config)
+			allIssues = append(allIssues, issues...)
+
 			return nil
-		}
-
-		// Skip directories (we only analyze files)
-		if info.IsDir() {
-			return nil
-		}
-
-		// Count the file
-		filesAnalyzed++
-
-		// Count lines in file
-		if content, err := os.ReadFile(path); err == nil {
-			totalLines += strings.Count(string(content), "\n") + 1
-		}
-
-		issues := analyzeFile(path, config)
-		allIssues = append(allIssues, issues...)
-
-		return nil
-	})
+		},
+	)
 
 	if err != nil {
-		log.Fatalf("Error analyzing target: %v", err)
+		slog.Error("Error analyzing target", "error", err)
+		os.Exit(1)
 	}
 
 	// Print statistics
-	fmt.Fprintf(os.Stderr, "\n📊 Analyzed %d files (%d lines of code)\n", filesAnalyzed, totalLines)
+	if !jsonOutput {
+		fmt.Fprintf(os.Stderr, "\n📊 Analyzed %d files (%d lines of code)\n", filesAnalyzed, totalLines)
+	} else {
+		slog.Debug("Analysis complete", "files", filesAnalyzed, "lines", totalLines)
+	}
 
 	return allIssues
 }
@@ -271,7 +411,8 @@ func outputJSON(target string, issues []analyzer.Issue) {
 	// Marshal and print JSON
 	jsonData, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
-		log.Fatalf("Error marshaling JSON: %v", err)
+		slog.Error("Error marshaling JSON", "error", err)
+		os.Exit(1)
 	}
 
 	fmt.Println(string(jsonData))
@@ -296,9 +437,13 @@ func outputHuman(target string, issues []analyzer.Issue) {
 		for _, issue := range issues {
 			severityIcon := getSeverityIcon(issue.Severity)
 			// Standard compiler error format that all IDEs understand
-			sb.WriteString(fmt.Sprintf("%s:%d:%d: %s [%s] %s - %s\n",
-				issue.Position.Filename, issue.Position.Line, issue.Position.Column,
-				severityIcon, issue.Type, issue.Message, issue.Suggestion))
+			sb.WriteString(
+				fmt.Sprintf(
+					"%s:%d:%d: %s [%s] %s - %s\n",
+					issue.Position.Filename, issue.Position.Line, issue.Position.Column,
+					severityIcon, issue.Type, issue.Message, issue.Suggestion,
+				),
+			)
 		}
 		fmt.Print(sb.String())
 	} else {
@@ -325,8 +470,12 @@ func outputHuman(target string, issues []analyzer.Issue) {
 				for _, issue := range groupIssues {
 					severityIcon := getSeverityIcon(issue.Severity)
 					// Format: file:line:column - this format is clickable in most IDEs
-					sb.WriteString(fmt.Sprintf("  %s %s:%d:%d [%s]\n",
-						severityIcon, issue.Position.Filename, issue.Position.Line, issue.Position.Column, issue.Type))
+					sb.WriteString(
+						fmt.Sprintf(
+							"  %s %s:%d:%d [%s]\n",
+							severityIcon, issue.Position.Filename, issue.Position.Line, issue.Position.Column, issue.Type,
+						),
+					)
 					sb.WriteString(fmt.Sprintf("     %s\n", issue.Message))
 					if issue.Suggestion != "" {
 						sb.WriteString(fmt.Sprintf("     💡 %s\n", issue.Suggestion))
@@ -349,11 +498,58 @@ func analyzeFile(filename string, config *Config) []analyzer.Issue {
 	if config == nil {
 		return nil
 	}
+
+	// Check if file has changed (if using cache)
+	if db != nil && !noCache {
+		changed, err := db.IsFileChanged(filename)
+		if err == nil && !changed {
+			// File hasn't changed, get cached issues
+			if record, err := db.GetFileRecord(filename); err == nil {
+				// Convert database issues back to analyzer issues
+				var cachedIssues []analyzer.Issue
+				for _, dbIssue := range record.Issues {
+					// Skip ignored issues
+					ignoredFound := false
+					for _, ignoredID := range record.Ignored {
+						if dbIssue.ID == ignoredID {
+							ignoredFound = true
+							break
+						}
+					}
+					if !ignoredFound {
+						// Reconstruct analyzer.Issue from database.Issue
+						cachedIssues = append(
+							cachedIssues, analyzer.Issue{
+								File:       filename,
+								Line:       dbIssue.Line,
+								Column:     dbIssue.Column,
+								Type:       dbIssue.Type,
+								Message:    dbIssue.Message,
+								Severity:   analyzer.Severity(dbIssue.Severity),
+								Suggestion: dbIssue.Suggestion,
+								CanBeFixed: dbIssue.CanBeFixed,
+								Position: token.Position{
+									Filename: filename,
+									Line:     dbIssue.Line,
+									Column:   dbIssue.Column,
+								},
+							},
+						)
+					}
+				}
+				if verbose {
+					slog.Debug("Using cached results", "file", filename, "issues", len(cachedIssues))
+				}
+				return cachedIssues
+			}
+		}
+	}
+
 	fset := token.NewFileSet()
 
 	node, err := parser.ParseFile(fset, filename, nil, parser.ParseComments)
 	if err != nil {
-		log.Printf("Error parsing %s: %v", filename, err)
+		slog.Warn("Error parsing file", "file", filename, "error", err)
 		return nil
 	}
 
@@ -376,11 +572,21 @@ func analyzeFile(filename string, config *Config) []analyzer.Issue {
 	// Use centralized Analyze function
 	issues := analyzer.Analyze(filename, node, fset, projectPath)
 
+	// Filter out issues that have ignore comments
+	issues = analyzer.FilterIssuesByComments(issues, fset, node)
+
 	// Filter issues based on configuration
 	var allIssues []analyzer.Issue
 	for _, issue := range issues {
 		if config.ShouldAnalyze(issue.Type) {
 			allIssues = append(allIssues, issue)
+		}
+	}
+
+	// Save to cache if using database
+	if db != nil && !noCache {
+		if err := db.SaveFileRecord(filename, allIssues); err != nil {
+			slog.Debug("Failed to save to cache", "file", filename, "error", err)
 		}
 	}
 
@@ -411,42 +617,52 @@ func getAnalyzerGroups() []analyzerGroup {
 		{
 			Name: "AI Bullshit Detection",
 			Icon: "🤖",
-			Types: []string{"AI_BULLSHIT_CONCURRENCY", "AI_REFLECTION_OVERKILL", "AI_PATTERN_ABUSE",
+			Types: []string{
+				"AI_BULLSHIT_CONCURRENCY", "AI_REFLECTION_OVERKILL", "AI_PATTERN_ABUSE",
 				"AI_ENTERPRISE_HELLO_WORLD", "AI_CAPTAIN_OBVIOUS", "AI_OVERENGINEERED_SIMPLE",
 				"AI_COMMENT", "AI_COMPLEXITY", "AI_VARIABLE", "AI_ERROR_HANDLING",
-				"AI_STRUCTURE", "AI_REPETITION", "AI_FACTORY_SIMPLE", "AI_REDUNDANT_ELSE"},
+				"AI_STRUCTURE", "AI_REPETITION", "AI_FACTORY_SIMPLE", "AI_REDUNDANT_ELSE",
+			},
 		},
 		{
 			Name: "Memory & GC",
 			Icon: "💾",
-			Types: []string{"MEMORY_LEAK", "GLOBAL_VAR", "LARGE_ALLOCATION", "HIGH_GC_PRESSURE",
+			Types: []string{
+				"MEMORY_LEAK", "GLOBAL_VAR", "LARGE_ALLOCATION", "HIGH_GC_PRESSURE",
 				"FREQUENT_ALLOCATION", "LARGE_HEAP_ALLOC", "POINTER_HEAVY_STRUCT",
 				"SLICE_CAPACITY", "SLICE_COPY", "SLICE_APPEND", "SLICE_RANGE_COPY",
-				"MAP_CAPACITY", "MAP_CLEAR", "INTERFACE_ALLOCATION", "EMPTY_INTERFACE"},
+				"MAP_CAPACITY", "MAP_CLEAR", "INTERFACE_ALLOCATION", "EMPTY_INTERFACE",
+			},
 		},
 		{
 			Name: "Concurrency & Race Conditions",
 			Icon: "🔄",
-			Types: []string{"RACE_CONDITION", "RACE_CONDITION_GLOBAL", "UNSYNC_MAP_ACCESS", "RACE_CLOSURE",
+			Types: []string{
+				"RACE_CONDITION", "RACE_CONDITION_GLOBAL", "UNSYNC_MAP_ACCESS", "RACE_CLOSURE",
 				"GOROUTINE_LEAK", "UNBUFFERED_CHANNEL", "GOROUTINE_OVERHEAD", "SYNC_MUTEX_VALUE",
 				"WAITGROUP_MISUSE", "RACE_IN_DEFER", "ATOMIC_MISUSE", "GOROUTINE_PER_REQUEST",
 				"NO_WORKER_POOL", "UNBUFFERED_SIGNAL_CHAN", "SELECT_DEFAULT", "CHANNEL_SIZE",
-				"RANGE_OVER_CHANNEL"},
+				"RANGE_OVER_CHANNEL",
+			},
 		},
 		{
 			Name: "Performance Hotspots",
 			Icon: "🔥",
-			Types: []string{"ALLOC_IN_LOOP", "NESTED_LOOP", "STRING_CONCAT_IN_LOOP", "APPEND_IN_LOOP",
+			Types: []string{
+				"ALLOC_IN_LOOP", "NESTED_LOOP", "STRING_CONCAT_IN_LOOP", "APPEND_IN_LOOP",
 				"DEFER_IN_LOOP", "REGEX_IN_LOOP", "TIME_IN_LOOP", "SQL_IN_LOOP", "DNS_IN_LOOP",
 				"REFLECTION_IN_LOOP", "CPU_INTENSIVE_LOOP", "UNNECESSARY_COPY", "BOUNDS_CHECK_ELIMINATION",
-				"INEFFICIENT_ALGORITHM", "CACHE_UNFRIENDLY"},
+				"INEFFICIENT_ALGORITHM", "CACHE_UNFRIENDLY",
+			},
 		},
 		{
 			Name: "Defer Optimization",
 			Icon: "⏰",
-			Types: []string{"DEFER_IN_SHORT_FUNC", "DEFER_OVERHEAD", "UNNECESSARY_DEFER", "DEFER_AT_END",
+			Types: []string{
+				"DEFER_IN_SHORT_FUNC", "DEFER_OVERHEAD", "UNNECESSARY_DEFER", "DEFER_AT_END",
 				"MULTIPLE_DEFERS", "DEFER_IN_HOT_PATH", "DEFER_LARGE_CAPTURE", "UNNECESSARY_MUTEX_DEFER",
-				"MISSING_DEFER_UNLOCK", "MISSING_DEFER_CLOSE"},
+				"MISSING_DEFER_UNLOCK", "MISSING_DEFER_CLOSE",
+			},
 		},
 		{
 			Name:  "String Operations",
@@ -466,8 +682,10 @@ func getAnalyzerGroups() []analyzerGroup {
 		{
 			Name: "Network & HTTP",
 			Icon: "🌐",
-			Types: []string{"HTTP_NO_TIMEOUT", "HTTP_NO_CLOSE", "HTTP_DEFAULT_CLIENT", "HTTP_NO_CONTEXT",
-				"KEEPALIVE_MISSING", "CONNECTION_POOL", "NO_REUSE_CONNECTION"},
+			Types: []string{
+				"HTTP_NO_TIMEOUT", "HTTP_NO_CLOSE", "HTTP_DEFAULT_CLIENT", "HTTP_NO_CONTEXT",
+				"KEEPALIVE_MISSING", "CONNECTION_POOL", "NO_REUSE_CONNECTION",
+			},
 		},
 		{
 			Name:  "Database",
@@ -477,20 +695,26 @@ func getAnalyzerGroups() []analyzerGroup {
 		{
 			Name: "Error Handling",
 			Icon: "⚠️",
-			Types: []string{"ERROR_IGNORED", "ERROR_CHECK_MISSING", "PANIC_RECOVER", "ERROR_STRING_FORMAT",
-				"NIL_CHECK", "PANIC_RISK", "NIL_RETURN", "PANIC_IN_LIBRARY"},
+			Types: []string{
+				"ERROR_IGNORED", "ERROR_CHECK_MISSING", "PANIC_RECOVER", "ERROR_STRING_FORMAT",
+				"NIL_CHECK", "PANIC_RISK", "NIL_RETURN", "PANIC_IN_LIBRARY",
+			},
 		},
 		{
 			Name: "Code Quality",
 			Icon: "🎯",
-			Types: []string{"HIGH_COMPLEXITY", "LONG_FUNCTION", "TOO_MANY_PARAMS", "DUPLICATE_CODE",
-				"UNUSED_PARAM", "TODO_FIXME", "SINGLE_LETTER_VAR", "MAGIC_NUMBER"},
+			Types: []string{
+				"HIGH_COMPLEXITY", "LONG_FUNCTION", "TOO_MANY_PARAMS", "DUPLICATE_CODE",
+				"UNUSED_PARAM", "TODO_FIXME", "SINGLE_LETTER_VAR", "MAGIC_NUMBER",
+			},
 		},
 		{
 			Name: "Context & API",
 			Icon: "⚡",
-			Types: []string{"CONTEXT_BACKGROUND", "CONTEXT_VALUE", "MISSING_CONTEXT_CANCEL", "CONTEXT_LEAK",
-				"CONTEXT_IN_STRUCT", "CONTEXT_NOT_FIRST", "SYNC_POOL_MISUSE", "CONTEXT_MISUSE", "WG_MISUSE"},
+			Types: []string{
+				"CONTEXT_BACKGROUND", "CONTEXT_VALUE", "MISSING_CONTEXT_CANCEL", "CONTEXT_LEAK",
+				"CONTEXT_IN_STRUCT", "CONTEXT_NOT_FIRST", "SYNC_POOL_MISUSE", "CONTEXT_MISUSE", "WG_MISUSE",
+			},
 		},
 		{
 			Name:  "Optimization Opportunities",
@@ -500,24 +724,30 @@ func getAnalyzerGroups() []analyzerGroup {
 		{
 			Name: "Test Coverage",
 			Icon: "🧪",
-			Types: []string{"MISSING_TEST", "MISSING_EXAMPLE", "MISSING_BENCHMARK", "UNTESTED_EXPORT",
-				"UNTESTED_TYPE", "UNTESTED_ERROR", "UNTESTED_CONCURRENCY", "UNTESTED_IO_FUNCTION"},
+			Types: []string{
+				"MISSING_TEST", "MISSING_EXAMPLE", "MISSING_BENCHMARK", "UNTESTED_EXPORT",
+				"UNTESTED_TYPE", "UNTESTED_ERROR", "UNTESTED_CONCURRENCY", "UNTESTED_IO_FUNCTION",
+			},
 		},
 		{
 			Name: "Privacy & Security",
 			Icon: "🔒",
-			Types: []string{"PRIVACY_HARDCODED_SECRET", "PRIVACY_AWS_KEY", "PRIVACY_JWT_TOKEN",
+			Types: []string{
+				"PRIVACY_HARDCODED_SECRET", "PRIVACY_AWS_KEY", "PRIVACY_JWT_TOKEN",
 				"PRIVACY_EMAIL_PII", "PRIVACY_SSN_PII", "PRIVACY_CREDIT_CARD_PII",
 				"PRIVACY_LOGGING_SENSITIVE", "PRIVACY_PRINTING_SENSITIVE", "PRIVACY_EXPOSED_FIELD",
-				"PRIVACY_UNENCRYPTED_DB_WRITE", "PRIVACY_DIRECT_INPUT_TO_DB"},
+				"PRIVACY_UNENCRYPTED_DB_WRITE", "PRIVACY_DIRECT_INPUT_TO_DB",
+			},
 		},
 		{
 			Name: "Dependencies",
 			Icon: "📦",
-			Types: []string{"DEPENDENCY_DEPRECATED", "DEPENDENCY_VULNERABLE", "DEPENDENCY_OUTDATED",
+			Types: []string{
+				"DEPENDENCY_DEPRECATED", "DEPENDENCY_VULNERABLE", "DEPENDENCY_OUTDATED",
 				"DEPENDENCY_CGO", "DEPENDENCY_UNSAFE", "DEPENDENCY_INTERNAL", "DEPENDENCY_INDIRECT",
 				"DEPENDENCY_LOCAL_REPLACE", "DEPENDENCY_NO_CHECKSUM", "DEPENDENCY_EMPTY_CHECKSUM",
-				"DEPENDENCY_VERSION_CONFLICT"},
+				"DEPENDENCY_VERSION_CONFLICT",
+			},
 		},
 		{
 			Name:  "Other",
@@ -559,14 +789,14 @@ func createDefaultConfig() {
 	// Create YAML config
 	yamlData, err := yaml.Marshal(config)
 	if err != nil {
-		log.Fatalf("Failed to marshal config: %v", err)
+		slog.Error("Failed to marshal config", "error", err)
 	}
 
 	const configFile = ".aibscleaner.yaml"
 	const configFileMode = 0644
 	err = os.WriteFile(configFile, yamlData, configFileMode)
 	if err != nil {
-		log.Fatalf("Failed to write config file: %v", err)
+		slog.Error("Failed to write config file", "error", err)
 	}
 
 	fmt.Printf("✅ Created default configuration file: %s\n", configFile)
@@ -574,4 +804,31 @@ func createDefaultConfig() {
 	fmt.Println("")
 	fmt.Println("Example usage:")
 	fmt.Println("  aibscleaner --config=.aibscleaner.yaml .")
+}
+
+// getProjectRoot finds the project root (directory with go.mod)
+func getProjectRoot(path string) string {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+
+	// If it's a file, start from its directory
+	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+		absPath = filepath.Dir(absPath)
+	}
+
+	// Walk up to find go.mod
+	current := absPath
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Reached root, return original path
+			return absPath
+		}
+		current = parent
+	}
 }

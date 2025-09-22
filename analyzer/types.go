@@ -20,6 +20,7 @@ type Issue struct {
 	Message    string
 	Suggestion string
 	Code       string
+	CanBeFixed bool
 }
 
 type Analyzer interface {
