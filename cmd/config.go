@@ -14,35 +14,23 @@ import (
 type Config struct {
 	// Analyzers configuration
 	Analyzers struct {
-		Loop                AnalyzerConfig `yaml:"loop" json:"loop"`
-		StringConcat        AnalyzerConfig `yaml:"string_concat" json:"string_concat"`
-		Defer               AnalyzerConfig `yaml:"defer" json:"defer"`
-		DeferOptimization   AnalyzerConfig `yaml:"defer_optimization" json:"defer_optimization"`
-		Slice               AnalyzerConfig `yaml:"slice" json:"slice"`
-		Map                 AnalyzerConfig `yaml:"map" json:"map"`
-		Reflection          AnalyzerConfig `yaml:"reflection" json:"reflection"`
-		Goroutine           AnalyzerConfig `yaml:"goroutine" json:"goroutine"`
-		Interface           AnalyzerConfig `yaml:"interface" json:"interface"`
-		Regex               AnalyzerConfig `yaml:"regex" json:"regex"`
-		Time                AnalyzerConfig `yaml:"time" json:"time"`
-		Complexity          AnalyzerConfig `yaml:"complexity" json:"complexity"`
-		MemoryLeak          AnalyzerConfig `yaml:"memory_leak" json:"memory_leak"`
-		Database            AnalyzerConfig `yaml:"database" json:"database"`
-		NilPtr              AnalyzerConfig `yaml:"nil_ptr" json:"nil_ptr"`
-		CodeSmell           AnalyzerConfig `yaml:"code_smell" json:"code_smell"`
-		APIMisuse           AnalyzerConfig `yaml:"api_misuse" json:"api_misuse"`
-		AIBullshit          AnalyzerConfig `yaml:"ai_bullshit" json:"ai_bullshit"`
-		Context             AnalyzerConfig `yaml:"context" json:"context"`
-		Channel             AnalyzerConfig `yaml:"channel" json:"channel"`
-		RaceCondition       AnalyzerConfig `yaml:"race_condition" json:"race_condition"`
-		ErrorHandling       AnalyzerConfig `yaml:"error_handling" json:"error_handling"`
-		HTTPClient          AnalyzerConfig `yaml:"http_client" json:"http_client"`
-		GCPressure          AnalyzerConfig `yaml:"gc_pressure" json:"gc_pressure"`
-		ConcurrencyPatterns AnalyzerConfig `yaml:"concurrency_patterns" json:"concurrency_patterns"`
-		CPUOptimization     AnalyzerConfig `yaml:"cpu_optimization" json:"cpu_optimization"`
-		NetworkPatterns     AnalyzerConfig `yaml:"network_patterns" json:"network_patterns"`
-		SyncPool            AnalyzerConfig `yaml:"sync_pool" json:"sync_pool"`
-		TestCoverage        AnalyzerConfig `yaml:"test_coverage" json:"test_coverage"`
+		Loop              AnalyzerConfig `yaml:"loop" json:"loop"`
+		DeferOptimization AnalyzerConfig `yaml:"defer_optimization" json:"defer_optimization"`
+		Slice             AnalyzerConfig `yaml:"slice" json:"slice"`
+		Map               AnalyzerConfig `yaml:"map" json:"map"`
+		Reflection        AnalyzerConfig `yaml:"reflection" json:"reflection"`
+		Goroutine         AnalyzerConfig `yaml:"goroutine" json:"goroutine"`
+		Interface         AnalyzerConfig `yaml:"interface" json:"interface"`
+		Regex             AnalyzerConfig `yaml:"regex" json:"regex"`
+		Time              AnalyzerConfig `yaml:"time" json:"time"`
+		MemoryLeak        AnalyzerConfig `yaml:"memory_leak" json:"memory_leak"`
+		Database          AnalyzerConfig `yaml:"database" json:"database"`
+		NilPtr            AnalyzerConfig `yaml:"nil_ptr" json:"nil_ptr"`
+		APIMisuse         AnalyzerConfig `yaml:"api_misuse" json:"api_misuse"`
+		AIBullshit        AnalyzerConfig `yaml:"ai_bullshit" json:"ai_bullshit"`
+		Channel           AnalyzerConfig `yaml:"channel" json:"channel"`
+		HTTPClient        AnalyzerConfig `yaml:"http_client" json:"http_client"`
+		Privacy           AnalyzerConfig `yaml:"privacy" json:"privacy"`
 	} `yaml:"analyzers" json:"analyzers"`
 
 	// Thresholds for various checks
@@ -79,10 +67,8 @@ type AnalyzerConfig struct {
 func DefaultConfig() *Config {
 	config := &Config{}
 
-	// Enable most analyzers by default
+	// Enable performance-focused analyzers by default
 	config.Analyzers.Loop.Enabled = true
-	config.Analyzers.StringConcat.Enabled = true
-	config.Analyzers.Defer.Enabled = true
 	config.Analyzers.DeferOptimization.Enabled = true
 	config.Analyzers.Slice.Enabled = true
 	config.Analyzers.Map.Enabled = true
@@ -91,24 +77,14 @@ func DefaultConfig() *Config {
 	config.Analyzers.Interface.Enabled = true
 	config.Analyzers.Regex.Enabled = true
 	config.Analyzers.Time.Enabled = true
-	config.Analyzers.Complexity.Enabled = true
 	config.Analyzers.MemoryLeak.Enabled = true
 	config.Analyzers.Database.Enabled = true
-	config.Analyzers.NilPtr.Enabled = false // Too many false positives, needs rewrite
-	config.Analyzers.CodeSmell.Enabled = true
+	config.Analyzers.NilPtr.Enabled = true
 	config.Analyzers.APIMisuse.Enabled = true
-	config.Analyzers.AIBullshit.Enabled = true // ENABLED! This is what AiBsCleaner is about
-	config.Analyzers.Context.Enabled = true
+	config.Analyzers.AIBullshit.Enabled = true
 	config.Analyzers.Channel.Enabled = true
-	config.Analyzers.RaceCondition.Enabled = false // Use `go test -race` instead
-	config.Analyzers.ErrorHandling.Enabled = false // Too many false positives
 	config.Analyzers.HTTPClient.Enabled = true
-	config.Analyzers.GCPressure.Enabled = true
-	config.Analyzers.ConcurrencyPatterns.Enabled = true
-	config.Analyzers.CPUOptimization.Enabled = false // Too aggressive for CLI tools
-	config.Analyzers.NetworkPatterns.Enabled = true
-	config.Analyzers.SyncPool.Enabled = true
-	config.Analyzers.TestCoverage.Enabled = false // Disabled by default - noisy
+	config.Analyzers.Privacy.Enabled = true
 
 	// Set default thresholds
 	config.Thresholds.MaxLoopDepth = 3
@@ -258,14 +234,6 @@ func (c *Config) ShouldAnalyze(issueType string) bool {
 	case "ALLOC_IN_LOOP", "NESTED_LOOP", "STRING_CONCAT_IN_LOOP", "APPEND_IN_LOOP":
 		return c.Analyzers.Loop.Enabled
 
-	// String concat analyzer
-	case "STRING_CONCAT", "STRING_BUILDER":
-		return c.Analyzers.StringConcat.Enabled
-
-	// Defer analyzer
-	case "DEFER_IN_LOOP", "DEFER_IN_SHORT_FUNC", "DEFER_OVERHEAD":
-		return c.Analyzers.Defer.Enabled
-
 	// Defer optimization analyzer
 	case "UNNECESSARY_DEFER", "DEFER_AT_END", "MULTIPLE_DEFERS", "DEFER_IN_HOT_PATH",
 		"DEFER_LARGE_CAPTURE", "UNNECESSARY_MUTEX_DEFER", "MISSING_DEFER_UNLOCK",
@@ -301,10 +269,6 @@ func (c *Config) ShouldAnalyze(issueType string) bool {
 	case "TIME_AFTER_LEAK", "TIME_FORMAT", "TIME_IN_LOOP":
 		return c.Analyzers.Time.Enabled
 
-	// Complexity analyzer
-	case "HIGH_COMPLEXITY":
-		return c.Analyzers.Complexity.Enabled
-
 	// Memory leak analyzer
 	case "MEMORY_LEAK", "GLOBAL_VAR", "LARGE_ALLOCATION":
 		return c.Analyzers.MemoryLeak.Enabled
@@ -318,12 +282,6 @@ func (c *Config) ShouldAnalyze(issueType string) bool {
 		"POTENTIAL_NIL_DEREF", "POTENTIAL_NIL_INDEX", "RANGE_OVER_NIL", "NIL_METHOD_CALL",
 		"UNCHECKED_PARAM":
 		return c.Analyzers.NilPtr.Enabled
-
-	// Code smell analyzer
-	case "LONG_FUNCTION", "TOO_MANY_PARAMS", "DUPLICATE_CODE", "UNUSED_PARAM", "TODO_FIXME",
-		"SINGLE_LETTER_VAR", "ARROW_ANTIPATTERN", "HARDCODED_CONFIG",
-		"CONSOLE_LOG_DEBUGGING", "UNTESTED_COMPLEX_FUNCTION", "PANIC_IN_LIBRARY":
-		return c.Analyzers.CodeSmell.Enabled
 
 	// API misuse analyzer
 	case "SYNC_POOL_MISUSE", "CONTEXT_MISUSE", "WG_MISUSE":

@@ -7,9 +7,28 @@
 
 > **"Like ABC for your code - everyone should have it!"**
 
-**AiBsCleaner** (AI + BS + ABC) - The essential tool that cleans AI-generated bullshit from your Go codebase. Because if AI can generate code, someone needs to clean up after it.
+**AiBsCleaner** (AI + BS + ABC) - The essential **performance-focused** analyzer that complements your existing Go linters. It cleans AI-generated bullshit and finds performance issues that standard linters miss.
+
+> ⚠️ **Important:** AiBsCleaner is NOT a replacement for standard Go linters! We strongly recommend using it alongside golangci-lint, staticcheck, and other code quality tools. We focus on performance, they focus on correctness and style.
 
 ## Why AiBsCleaner?
+
+### It Complements Your Linters
+
+**Standard linters** (golangci-lint, staticcheck, govet) focus on:
+
+- ✅ Code correctness
+- ✅ Style and conventions
+- ✅ Common bugs
+- ✅ Security issues
+
+**AiBsCleaner** adds what they miss:
+
+- Performance bottlenecks
+- O(n²/n³) complexity issues
+- Memory allocation patterns
+- Goroutine performance
+- AI-generated over-engineering
 
 With the rise of AI code generators (Copilot, ChatGPT, Claude), we're seeing an epidemic of:
 
@@ -19,7 +38,7 @@ With the rise of AI code generators (Copilot, ChatGPT, Claude), we're seeing an 
 - Zombie code that "works" but nobody knows why
 - Comments explaining what `i++` does
 
-**AiBsCleaner** detects and helps eliminate this algorithmic nonsense.
+**AiBsCleaner** detects and helps eliminate this algorithmic nonsense while your regular linters handle the basics.
 
 ## What It Catches
 
@@ -62,13 +81,15 @@ func AddNumbers(a, b int) int {
 ### Installation
 
 ```bash
-# Install the cleaner
+# First, make sure you have standard linters (REQUIRED!)
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+# Then install AiBsCleaner for performance analysis
 go install github.com/SergeiSkv/AiBsCleaner@latest
 
-# Clean your project
-aibscleaner
-
-# Watch it find 700+ issues in its own codebase (yes, really)
+# Use both together for complete coverage
+golangci-lint run   # Check code quality
+aibscleaner          # Check performance
 ```
 
 ### Example Output
@@ -106,17 +127,27 @@ db/query.go:67  N_PLUS_ONE_QUERY
 
 ## Features
 
-### 17+ Specialized Cleaners
+### Performance-Focused Analyzers (Not in Standard Linters)
 
-- **BullshitDetector** - Finds over-engineered solutions
-- **ComplexityAnalyzer** - O(n²), O(n³) pattern detection
-- **MemoryLeakFinder** - Resource leaks, goroutine leaks
-- **StringCrimesUnit** - String concatenation disasters
-- **DatabaseDetektor** - N+1, missing indexes, SQL injection
-- **CommentCleaner** - Removes Captain Obvious comments
-- **GoroutinePolice** - Concurrent code issues
-- **DeferDefender** - Defer in loops and hot paths
-- And more...
+**What we DON'T do (use standard linters for these):**
+
+- ❌ Code style (use golint/revive)
+- ❌ Error checking (use errcheck)
+- ❌ Cyclomatic complexity (use gocyclo)
+- ❌ Security issues (use gosec)
+- ❌ Race conditions (use go race detector)
+
+**What we DO uniquely:**
+
+- ✅ **AIBullshitAnalyzer** - Over-engineered AI patterns
+- ✅ **LoopAnalyzer** - O(n²/n³) complexity, allocations in loops
+- ✅ **MemoryLeakAnalyzer** - Goroutine leaks, unclosed tickers
+- ✅ **DatabaseAnalyzer** - N+1 queries, SQL in loops
+- ✅ **DeferOptimizationAnalyzer** - Defer overhead analysis
+- ✅ **GCPressureAnalyzer** - GC pressure patterns
+- ✅ **HTTPClientAnalyzer** - HTTP client performance
+- ✅ **SliceAnalyzer** - Slice preallocation opportunities
+- And more performance-specific checks...
 
 ### Automatic Fixing (Experimental)
 
@@ -207,13 +238,14 @@ exclude:
 ### GoLand / IntelliJ IDEA
 
 > **Native GoLand Plugin in Development!**
-> 
+>
 > We're developing a native GoLand/IntelliJ IDEA plugin that will provide:
+>
 > - Real-time analysis as you type
 > - Inline issue highlighting
 > - Quick fixes and auto-refactoring
 > - Integration with GoLand's inspection framework
-> 
+>
 > **Coming soon to JetBrains Marketplace!**
 
 For now, you can use AiBsCleaner as an external tool:
@@ -298,8 +330,9 @@ jobs:
 > **AiBsCleaner Cloud - Coming Soon!**
 >
 > We're building a cloud-based version with advanced features:
-> 
+>
 > ### Features
+>
 > - **Distributed Analysis** - Analyze large codebases with Kubernetes-powered workers
 > - **Scheduled Scans** - Set up cron jobs for regular analysis (@hourly, @daily, custom)
 > - **Team Dashboard** - Track code quality metrics across your organization
@@ -307,8 +340,9 @@ jobs:
 > - **REST API** - Integrate with your CI/CD pipeline
 > - **Historical Trends** - Monitor how your code quality improves over time
 > - **Multi-repo Support** - Manage multiple projects from one dashboard
-> 
+>
 > ### Architecture
+>
 > - Redis-based job queue for scalability
 > - PostgreSQL for metadata storage
 > - MongoDB for analysis results
@@ -329,17 +363,48 @@ if [ $? -ne 0 ]; then
 fi
 ```
 
-### golangci-lint Plugin
+### golangci-lint Integration
 
 ```yaml
+# .golangci.yml
 linters:
   enable:
+    # Standard linters (USE THESE!)
+    - govet
+    - staticcheck
+    - errcheck
+    - gosec
+    - ineffassign
+    - gocritic
+    - revive
+  
+    # Add AiBsCleaner for performance
     - aibscleaner
   
 linters-settings:
   aibscleaner:
+    # Focus on performance only
+    performance-only: true
     detect-ai-patterns: true
-    fix-simple-issues: true
+```
+
+### Recommended Setup
+
+```bash
+# Create a Makefile for both tools
+analyze: lint performance
+
+lint:
+	@echo "Running standard linters..."
+	golangci-lint run
+
+performance:
+	@echo "Running performance analysis..."
+	aibscleaner
+
+fix:
+	golangci-lint run --fix
+	aibscleaner --fix
 ```
 
 ## API Usage
@@ -419,14 +484,19 @@ for i := 0; i < len(items); i++ {
 wg.Wait()  // Deadlock
 ```
 
+## Why We Don't Replace Linters
+
+We focus on what standard linters don't cover: **performance optimization**.
+
 ## Contributing
 
-Found new AI bullshit patterns? Add them!
+Found new performance issues? Add them!
 
 1. Fork the repo
-2. Add your detector in `detector/`
-3. Add tests (yes, we test our BS detectors)
-4. Submit PR with examples of BS you found
+2. Add your detector in `analyzer/`
+3. Make sure it doesn't duplicate standard linters
+4. Add tests
+5. Submit PR with examples
 
 ## Disclaimer
 

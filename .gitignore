@@ -49,3 +49,37 @@ temp/
 # Debug files
 debug
 __debug_bin
+
+# ============================
+# PREMIUM FEATURES (NOT OPEN SOURCE)
+# ============================
+# These directories contain commercial features
+/analyzer/llm/
+/plugin/
+/server/
+/benchmark_gen/
+/cloud/
+/enterprise/
+/premium/
+
+# Premium Go files
+*.premium.go
+*_premium.go
+*_commercial.go
+
+# Premium configurations
+.env.premium
+config.premium.yaml
+license.key
+*.license
+
+# Plugin builds
+/goland-plugin/
+/vscode-extension/
+*.jar
+*.vsix
+
+# Server deployment
+/deploy/
+/k8s/
+docker-compose.premium.yml

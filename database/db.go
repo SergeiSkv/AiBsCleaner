@@ -3,14 +3,15 @@ package database
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/SergeiSkv/AiBsCleaner/analyzer"
+	"github.com/vmihailenco/msgpack/v5"
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/SergeiSkv/AiBsCleaner/analyzer"
 )
 
 type DB struct {
@@ -18,25 +19,25 @@ type DB struct {
 }
 
 type FileRecord struct {
-	Path         string    `json:"path"`
-	Hash         string    `json:"hash"`
-	LastAnalyzed time.Time `json:"last_analyzed"`
-	Issues       []Issue   `json:"issues"`
-	Ignored      []string  `json:"ignored"` // Issue IDs that are ignored
+	Path         string    `msgpack:"path"`
+	Hash         string    `msgpack:"hash"`
+	LastAnalyzed time.Time `msgpack:"last_analyzed"`
+	Issues       []Issue   `msgpack:"issues"`
+	Ignored      []string  `msgpack:"ignored"` // Issue IDs that are ignored
 }
 
 type Issue struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Line       int       `json:"line"`
-	Column     int       `json:"column"`
-	Message    string    `json:"message"`
-	Severity   string    `json:"severity"`
-	Suggestion string    `json:"suggestion"`
-	CanBeFixed bool      `json:"can_be_fixed"`
-	IgnoredAt  time.Time `json:"ignored_at,omitempty"`
-	FixedAt    time.Time `json:"fixed_at,omitempty"`
-	IgnoreType string    `json:"ignore_type,omitempty"` // "comment", "manual", "config"
+	ID         string    `msgpack:"id"`
+	Type       string    `msgpack:"type"`
+	Line       int       `msgpack:"line"`
+	Column     int       `msgpack:"column"`
+	Message    string    `msgpack:"message"`
+	Severity   string    `msgpack:"severity"`
+	Suggestion string    `msgpack:"suggestion"`
+	CanBeFixed bool      `msgpack:"can_be_fixed"`
+	IgnoredAt  time.Time `msgpack:"ignored_at,omitempty"`
+	FixedAt    time.Time `msgpack:"fixed_at,omitempty"`
+	IgnoreType string    `msgpack:"ignore_type,omitempty"` // "comment", "manual", "config"
 }
 
 const (
@@ -108,7 +109,7 @@ func (d *DB) IsFileChanged(filePath string) (bool, error) {
 			if data == nil {
 				return nil // File not in DB, so it's "changed"
 			}
-			return json.Unmarshal(data, &record)
+			return msgpack.Unmarshal(data, &record)
 		},
 	)
 	if err != nil {
@@ -140,7 +141,7 @@ func (d *DB) SaveFileRecord(filePath string, issues []analyzer.Issue) error {
 			b := tx.Bucket([]byte(BucketFiles))
 			data := b.Get([]byte(filePath))
 			if data != nil {
-				return json.Unmarshal(data, &oldRecord)
+				return msgpack.Unmarshal(data, &oldRecord)
 			}
 			return nil
 		},
@@ -152,7 +153,7 @@ func (d *DB) SaveFileRecord(filePath string, issues []analyzer.Issue) error {
 	return d.db.Update(
 		func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte(BucketFiles))
-			data, err := json.Marshal(record)
+			data, err := msgpack.Marshal(record)
 			if err != nil {
 				return err
 			}
@@ -171,7 +172,7 @@ func (d *DB) GetFileRecord(filePath string) (*FileRecord, error) {
 			if data == nil {
 				return fmt.Errorf("file not found: %s", filePath)
 			}
-			return json.Unmarshal(data, &record)
+			return msgpack.Unmarshal(data, &record)
 		},
 	)
 	if err != nil {
@@ -192,7 +193,7 @@ func (d *DB) IgnoreIssue(filePath string, issueID string, ignoreType string) err
 			}
 
 			var record FileRecord
-			if err := json.Unmarshal(data, &record); err != nil {
+			if err := msgpack.Unmarshal(data, &record); err != nil {
 				return err
 			}
 
@@ -218,7 +219,7 @@ func (d *DB) IgnoreIssue(filePath string, issueID string, ignoreType string) err
 			}
 
 			// Save updated record
-			data, err := json.Marshal(record)
+			data, err := msgpack.Marshal(record)
 			if err != nil {
 				return err
 			}
@@ -237,7 +238,7 @@ func (d *DB) IsIssueIgnored(filePath string, issueID string) (bool, error) {
 			if data == nil {
 				return nil // File not found, issue not ignored
 			}
-			return json.Unmarshal(data, &record)
+			return msgpack.Unmarshal(data, &record)
 		},
 	)
 	if err != nil {
@@ -263,7 +264,7 @@ func (d *DB) MarkIssueFixed(filePath string, issueID string) error {
 			}
 
 			var record FileRecord
-			if err := json.Unmarshal(data, &record); err != nil {
+			if err := msgpack.Unmarshal(data, &record); err != nil {
 				return err
 			}
 
@@ -276,7 +277,7 @@ func (d *DB) MarkIssueFixed(filePath string, issueID string) error {
 			}
 
 			// Save updated record
-			data, err := json.Marshal(record)
+			data, err := msgpack.Marshal(record)
 			if err != nil {
 				return err
 			}
@@ -298,22 +299,28 @@ func (d *DB) GetStats() (map[string]interface{}, error) {
 			ignoredIssues := 0
 			fixedIssues := 0
 
-			filesB.ForEach(
+			err := filesB.ForEach(
 				func(k, v []byte) error {
 					totalFiles++
 					var record FileRecord
-					if err := json.Unmarshal(v, &record); err == nil {
-						totalIssues += len(record.Issues)
-						ignoredIssues += len(record.Ignored)
-						for _, issue := range record.Issues {
-							if !issue.FixedAt.IsZero() {
-								fixedIssues++
-							}
+					err := msgpack.Unmarshal(v, &record)
+					if err != nil {
+						// Skip malformed records
+						return nil
+					}
+					totalIssues += len(record.Issues)
+					ignoredIssues += len(record.Ignored)
+					for _, issue := range record.Issues {
+						if !issue.FixedAt.IsZero() {
+							fixedIssues++
 						}
 					}
 					return nil
 				},
 			)
+			if err != nil {
+				return err
+			}
 
 			stats["total_files"] = totalFiles
 			stats["total_issues"] = totalIssues

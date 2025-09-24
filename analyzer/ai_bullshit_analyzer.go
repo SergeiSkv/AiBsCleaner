@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"strings"
@@ -83,6 +84,14 @@ func (a *AIBullshitAnalyzer) checkOverEngineering(fn *ast.FuncDecl, fset *token.
 						Message:    "Over-engineered solution for simple task - AI bullshit detected",
 						Suggestion: "Simplify: this function is too simple to need " + pattern + " pattern",
 						Code:       "Function: " + funcName,
+						WhyBad: fmt.Sprintf(`Using %s pattern for a %d-line function is overkill.
+PROBLEMS:
+• Unnecessary abstraction layers add complexity
+• Extra allocations for interface dispatch
+• Harder to understand and maintain
+• Prevents compiler optimizations (inlining)
+IMPACT: 10-20x more code, 2-5x slower execution
+BETTER: Use direct function calls without patterns`, pattern, len(fn.Body.List)),
 					},
 				)
 			}
@@ -103,39 +112,43 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryComplexity(fn *ast.FuncDecl, fset *
 
 	// AI often creates functions with excessive complexity for simple tasks
 	// Example: 30 lines of code to check if number is even
-	if strings.Contains(fn.Name.Name, "Check") || strings.Contains(fn.Name.Name, "Validate") {
-		if len(fn.Body.List) > 20 {
-			// Check if it's too complex for simple validation
-			hasSimpleLogic := false
-			ast.Inspect(
-				fn.Body, func(n ast.Node) bool {
-					// Look for simple operations (% == != < > && ||)
-					if binExpr, ok := n.(*ast.BinaryExpr); ok {
-						op := binExpr.Op.String()
-						if op == "%" || op == "==" || op == "!=" || op == "<" || op == ">" {
-							hasSimpleLogic = true
-						}
-					}
-					return true
-				},
-			)
+	if !strings.Contains(fn.Name.Name, "Check") && !strings.Contains(fn.Name.Name, "Validate") {
+		return issues
+	}
 
-			if hasSimpleLogic {
-				issues = append(
-					issues, Issue{
-						File:       pos.Filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       "AI_UNNECESSARY_COMPLEXITY",
-						Severity:   SeverityHigh,
-						Message:    "Unnecessarily complex function for simple logic - AI bullshit",
-						Suggestion: "This can probably be done in 1-3 lines, not " + string(rune(len(fn.Body.List))) + " lines",
-						Code:       "Function: " + fn.Name.Name,
-					},
-				)
+	if len(fn.Body.List) <= 20 {
+		return issues
+	}
+
+	// Check if it's too complex for simple validation
+	hasSimpleLogic := false
+	ast.Inspect(
+		fn.Body, func(n ast.Node) bool {
+			// Look for simple operations (% == != < > && ||)
+			if binExpr, ok := n.(*ast.BinaryExpr); ok {
+				op := binExpr.Op.String()
+				if op == "%" || op == "==" || op == "!=" || op == "<" || op == ">" {
+					hasSimpleLogic = true
+				}
 			}
-		}
+			return true
+		},
+	)
+
+	if hasSimpleLogic {
+		issues = append(
+			issues, Issue{
+				File:       pos.Filename,
+				Line:       pos.Line,
+				Column:     pos.Column,
+				Position:   pos,
+				Type:       "AI_UNNECESSARY_COMPLEXITY",
+				Severity:   SeverityHigh,
+				Message:    "Unnecessarily complex function for simple logic - AI bullshit",
+				Suggestion: "This can probably be done in 1-3 lines, not " + string(rune(len(fn.Body.List))) + " lines",
+				Code:       "Function: " + fn.Name.Name,
+			},
+		)
 	}
 
 	return issues
@@ -144,57 +157,78 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryComplexity(fn *ast.FuncDecl, fset *
 // AI-specific patterns
 func (a *AIBullshitAnalyzer) checkAIPatterns(fn *ast.FuncDecl, fset *token.FileSet) []Issue {
 	var issues []Issue
-	pos := fset.Position(fn.Pos())
 
 	if fn.Name == nil || fn.Body == nil {
 		return issues
 	}
 
-	// AI often creates goroutine + channel for simple operations
-	hasGoroutine := false
-	hasChannel := false
+	// Check for goroutine overkill
+	issues = append(issues, a.checkGoroutineOverkill(fn, fset)...)
 
-	ast.Inspect(
-		fn.Body, func(n ast.Node) bool {
-			// Look for goroutines
-			if goStmt, ok := n.(*ast.GoStmt); ok {
-				_ = goStmt
-				hasGoroutine = true
-			}
+	return issues
+}
 
-			// Look for channels
-			if callExpr, ok := n.(*ast.CallExpr); ok {
-				if ident, ok := callExpr.Fun.(*ast.Ident); ok {
-					if ident.Name == "make" && len(callExpr.Args) > 0 {
-						if chanType, ok := callExpr.Args[0].(*ast.ChanType); ok {
-							_ = chanType
-							hasChannel = true
-						}
-					}
-				}
-			}
-			return true
-		},
-	)
+// checkGoroutineOverkill detects unnecessary use of goroutines for simple operations
+func (a *AIBullshitAnalyzer) checkGoroutineOverkill(fn *ast.FuncDecl, fset *token.FileSet) []Issue {
+	var issues []Issue
+	pos := fset.Position(fn.Pos())
 
-	// AI bullshit: goroutine + channel for adding two numbers
+	hasGoroutine := a.hasGoroutine(fn.Body)
+	hasChannel := a.hasChannel(fn.Body)
+
+	// AI bullshit: goroutine + channel for simple operations
 	if hasGoroutine && hasChannel && len(fn.Body.List) < 10 {
-		issues = append(
-			issues, Issue{
-				File:       pos.Filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       "AI_GOROUTINE_OVERKILL",
-				Severity:   SeverityHigh,
-				Message:    "Using goroutines and channels for simple operation - AI bullshit",
-				Suggestion: "Remove goroutines and channels, do it synchronously",
-				Code:       "Function: " + fn.Name.Name,
-			},
-		)
+		issues = append(issues, Issue{
+			File:       pos.Filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       "AI_GOROUTINE_OVERKILL",
+			Severity:   SeverityHigh,
+			Message:    "Using goroutines and channels for simple operation - AI bullshit",
+			Suggestion: "Remove goroutines and channels, do it synchronously",
+			Code:       "Function: " + fn.Name.Name,
+		})
 	}
 
 	return issues
+}
+
+// hasGoroutine checks if function body contains goroutines
+func (a *AIBullshitAnalyzer) hasGoroutine(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.GoStmt); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// hasChannel checks if function body creates channels
+func (a *AIBullshitAnalyzer) hasChannel(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		callExpr, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+
+		ident, ok := callExpr.Fun.(*ast.Ident)
+		if !ok || ident.Name != "make" || len(callExpr.Args) == 0 {
+			return true
+		}
+
+		if _, ok := callExpr.Args[0].(*ast.ChanType); ok {
+			found = true
+			return false
+		}
+
+		return true
+	})
+	return found
 }
 
 // AI loves unnecessary reflection
@@ -270,56 +304,64 @@ func (a *AIBullshitAnalyzer) checkUnnecessaryInterfaces(gen *ast.GenDecl, fset *
 	}
 
 	for _, spec := range gen.Specs {
-		if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-			interfaceName := typeSpec.Name.Name
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
 
-			// Check for Factory and other over-engineering patterns
-			overEngineeredPatterns := []string{
-				"Factory", "AbstractFactory", "Builder", "Strategy",
+		interfaceName := typeSpec.Name.Name
+
+		// Check for Factory and other over-engineering patterns
+		overEngineeredPatterns := []string{
+			"Factory", "AbstractFactory", "Builder", "Strategy",
+		}
+
+		for _, pattern := range overEngineeredPatterns {
+			if strings.Contains(interfaceName, pattern) {
+				issues = append(
+					issues, Issue{
+						File:       pos.Filename,
+						Line:       pos.Line,
+						Column:     pos.Column,
+						Position:   pos,
+						Type:       "AI_OVER_ENGINEERING",
+						Severity:   SeverityHigh,
+						Message:    "Over-engineered solution for simple task - AI bullshit detected",
+						Suggestion: "Simplify: consider if " + pattern + " pattern is really necessary here",
+						Code:       "Type: " + interfaceName,
+					},
+				)
 			}
+		}
 
-			for _, pattern := range overEngineeredPatterns {
-				if strings.Contains(interfaceName, pattern) {
-					issues = append(
-						issues, Issue{
-							File:       pos.Filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       "AI_OVER_ENGINEERING",
-							Severity:   SeverityHigh,
-							Message:    "Over-engineered solution for simple task - AI bullshit detected",
-							Suggestion: "Simplify: consider if " + pattern + " pattern is really necessary here",
-							Code:       "Type: " + interfaceName,
-						},
-					)
-				}
-			}
+		interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+		if !ok {
+			continue
+		}
 
-			if interfaceType, ok := typeSpec.Type.(*ast.InterfaceType); ok {
-				// If interface has only one method and simple name
-				if len(interfaceType.Methods.List) == 1 {
-					// AI bullshit patterns in interface names
-					bullshitPatterns := []string{"Provider", "Manager", "Handler", "Service"}
+		// If interface has only one method and simple name
+		if len(interfaceType.Methods.List) != 1 {
+			continue
+		}
 
-					for _, pattern := range bullshitPatterns {
-						if strings.Contains(interfaceName, pattern) {
-							issues = append(
-								issues, Issue{
-									File:       pos.Filename,
-									Line:       pos.Line,
-									Column:     pos.Column,
-									Position:   pos,
-									Type:       "AI_UNNECESSARY_INTERFACE",
-									Severity:   SeverityMedium,
-									Message:    "Single-method interface with generic name - possible AI bullshit",
-									Suggestion: "Consider if this interface is really needed or use concrete type",
-									Code:       "Interface: " + interfaceName,
-								},
-							)
-						}
-					}
-				}
+		// AI bullshit patterns in interface names
+		bullshitPatterns := []string{"Provider", "Manager", "Handler", "Service"}
+
+		for _, pattern := range bullshitPatterns {
+			if strings.Contains(interfaceName, pattern) {
+				issues = append(
+					issues, Issue{
+						File:       pos.Filename,
+						Line:       pos.Line,
+						Column:     pos.Column,
+						Position:   pos,
+						Type:       "AI_UNNECESSARY_INTERFACE",
+						Severity:   SeverityMedium,
+						Message:    "Single-method interface with generic name - possible AI bullshit",
+						Suggestion: "Consider if this interface is really needed or use concrete type",
+						Code:       "Interface: " + interfaceName,
+					},
+				)
 			}
 		}
 	}

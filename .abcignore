@@ -9,6 +9,7 @@ vendor/
 *_test.go
 testdata/
 test_data/
+test/
 mocks/
 
 # Build and temporary files

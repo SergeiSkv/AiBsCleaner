@@ -3,7 +3,6 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
-	"strings"
 )
 
 type NilPtrAnalyzer struct {
@@ -70,10 +69,19 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 	localAssigned := make(map[string]bool, 10)
 
 	// Track type switch assignments to avoid flagging them as unchecked type assertions
+	typeSwitchAssignments := npa.findTypeSwitchAssignments(fn.Body)
+
+	// Analyze the function body for nil pointer issues
+	issues = append(issues, npa.analyzeFunctionBody(fn, filename, fset, localChecked, localAssigned, typeSwitchAssignments)...)
+
+	return issues
+}
+
+// findTypeSwitchAssignments identifies all type switch assignments in a block
+func (npa *NilPtrAnalyzer) findTypeSwitchAssignments(body *ast.BlockStmt) map[*ast.AssignStmt]bool {
 	typeSwitchAssignments := make(map[*ast.AssignStmt]bool)
 
-	// First, identify all type switch assignments
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	ast.Inspect(body, func(n ast.Node) bool {
 		if typeSwitch, ok := n.(*ast.TypeSwitchStmt); ok {
 			if typeSwitch.Assign != nil {
 				if assignStmt, ok := typeSwitch.Assign.(*ast.AssignStmt); ok {
@@ -83,6 +91,15 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 		}
 		return true
 	})
+
+	return typeSwitchAssignments
+}
+
+// analyzeFunctionBody analyzes the function body for nil pointer issues
+func (npa *NilPtrAnalyzer) analyzeFunctionBody(fn *ast.FuncDecl, filename string, fset *token.FileSet,
+	localChecked, localAssigned map[string]bool, typeSwitchAssignments map[*ast.AssignStmt]bool) []Issue {
+
+	var issues []Issue
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
@@ -166,8 +183,7 @@ func (npa *NilPtrAnalyzer) analyzeFunction(fn *ast.FuncDecl, filename string, fs
 				}
 			}
 
-			// Check for unchecked error returns
-			issues = append(issues, npa.analyzeErrorReturn(node, fn.Body, filename, fset)...)
+			// Skip error return checks - use errcheck linter for this instead
 		}
 		return true
 	})
@@ -224,10 +240,12 @@ func (npa *NilPtrAnalyzer) analyzeFuncLit(fn *ast.FuncLit, filename string, fset
 		return true
 	})
 
-	// Analyze assignments in function literal
+	// Analyze assignments and function calls in function literal
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if assignStmt, ok := n.(*ast.AssignStmt); ok {
-			issues = append(issues, npa.analyzeAssignment(assignStmt, localChecked, localAssigned, filename, fset, typeSwitchAssignments)...)
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			issues = append(issues, npa.analyzeAssignment(node, localChecked, localAssigned, filename, fset, typeSwitchAssignments)...)
+			// Skip error checks - use errcheck linter instead
 		}
 		return true
 	})
@@ -243,25 +261,8 @@ func (npa *NilPtrAnalyzer) analyzeAssignment(stmt *ast.AssignStmt, checked, assi
 			if i < len(stmt.Rhs) {
 				rhs := stmt.Rhs[i]
 
-				// Check if assigning function call that returns error
+				// Check if assigning function call that can return nil
 				if call, ok := rhs.(*ast.CallExpr); ok {
-					if npa.returnsError(call) {
-						// Check if error is ignored
-						if ident.Name == "_" && npa.isLastReturnValue(i, stmt) {
-							pos := fset.Position(stmt.Pos())
-							issues = append(issues, Issue{
-								File:       filename,
-								Line:       pos.Line,
-								Column:     pos.Column,
-								Position:   pos,
-								Type:       "IGNORED_ERROR",
-								Severity:   SeverityHigh,
-								Message:    "Error return value ignored",
-								Suggestion: "Check and handle error properly",
-							})
-						}
-					}
-
 					// Mark as potentially nil if function can return nil
 					if npa.canReturnNil(call) {
 						assigned[ident.Name] = true
@@ -326,70 +327,6 @@ func (npa *NilPtrAnalyzer) analyzeIfStatement(stmt *ast.IfStmt, checked map[stri
 			}
 		}
 	}
-}
-
-func (npa *NilPtrAnalyzer) analyzeErrorReturn(call *ast.CallExpr, body *ast.BlockStmt, filename string, fset *token.FileSet) []Issue {
-	var issues []Issue
-
-	// Check if this is a function that returns an error
-	if !npa.returnsError(call) {
-		return issues
-	}
-
-	// Check if error is properly handled
-	parent := npa.findParentStatement(call, body)
-	if parent != nil {
-		if assign, ok := parent.(*ast.AssignStmt); ok {
-			hasErrorCheck := false
-			var errorVar string
-
-			// Find the error variable
-			for i, lhs := range assign.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					// Check if this looks like an error variable
-					// Only consider it an error if it's the last value AND the name suggests it's an error
-					if i == len(assign.Lhs)-1 && (ident.Name == "err" || ident.Name == "error") {
-						errorVar = ident.Name
-						if errorVar == "_" {
-							// Error explicitly ignored
-							pos := fset.Position(call.Pos())
-							issues = append(issues, Issue{
-								File:       filename,
-								Line:       pos.Line,
-								Column:     pos.Column,
-								Position:   pos,
-								Type:       "IGNORED_ERROR",
-								Severity:   SeverityHigh,
-								Message:    "Error return value explicitly ignored",
-								Suggestion: "Handle error or document why it's safe to ignore",
-							})
-							return issues
-						}
-					}
-				}
-			}
-
-			// Check if error is checked in subsequent statements
-			if errorVar != "" && errorVar != "_" {
-				hasErrorCheck = npa.hasErrorCheck(errorVar, body, assign)
-				if !hasErrorCheck {
-					pos := fset.Position(call.Pos())
-					issues = append(issues, Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       "UNCHECKED_ERROR",
-						Severity:   SeverityHigh,
-						Message:    "Error not checked after function call",
-						Suggestion: "Add: if " + errorVar + " != nil { // handle error }",
-					})
-				}
-			}
-		}
-	}
-
-	return issues
 }
 
 func (npa *NilPtrAnalyzer) analyzeFunctionReturns(fn *ast.FuncDecl) {
@@ -467,78 +404,6 @@ func (npa *NilPtrAnalyzer) canTypeBeNil(expr ast.Expr) bool {
 		// Could be an interface or other nilable type
 		return true
 	}
-	return false
-}
-
-func (npa *NilPtrAnalyzer) returnsError(call *ast.CallExpr) bool {
-	// Check common error-returning functions
-	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-		errorFuncs := []string{
-			"Open", "Create", "Close", "Read", "Write",
-			"Get", "Post", "Do", "Query", "Exec", "Scan",
-			"Decode", "Encode", "Marshal", "Unmarshal",
-		}
-
-		for _, fn := range errorFuncs {
-			if strings.Contains(sel.Sel.Name, fn) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-func (npa *NilPtrAnalyzer) isLastReturnValue(index int, stmt *ast.AssignStmt) bool {
-	return index == len(stmt.Lhs)-1
-}
-
-func (npa *NilPtrAnalyzer) findParentStatement(node ast.Node, body *ast.BlockStmt) ast.Stmt {
-	for _, stmt := range body.List {
-		if containsNode(stmt, node) {
-			return stmt
-		}
-	}
-	return nil
-}
-
-func containsNode(haystack, needle ast.Node) bool {
-	found := false
-	ast.Inspect(haystack, func(n ast.Node) bool {
-		if n == needle {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-func (npa *NilPtrAnalyzer) hasErrorCheck(errorVar string, body *ast.BlockStmt, after ast.Stmt) bool {
-	foundAfter := false
-	for _, stmt := range body.List {
-		if stmt == after {
-			foundAfter = true
-			continue
-		}
-
-		if !foundAfter {
-			continue
-		}
-
-		// Check if this statement checks the error
-		if ifStmt, ok := stmt.(*ast.IfStmt); ok {
-			if npa.checksVariable(ifStmt.Cond, errorVar) {
-				return true
-			}
-		}
-
-		// If error is used in any other way before checking, it's dangerous
-		if npa.usesVariable(stmt, errorVar) {
-			return false
-		}
-	}
-
 	return false
 }
 

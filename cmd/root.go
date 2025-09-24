@@ -24,7 +24,7 @@ var (
 	verbose    bool
 	reportType string
 	logLevel   string
-	noCache    bool
+	noCache    = true // Disabled by default for better accuracy
 	clearCache bool
 	ignoreFile string
 	version    = "1.0.0"
@@ -238,8 +238,16 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.PersistentFlags().StringVarP(&reportType, "report", "r", "terminal", "Report format: terminal, html, markdown, json, all")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "", "info", "Log level: debug, info, warn, error")
-	rootCmd.PersistentFlags().BoolVar(&noCache, "no-cache", false, "Disable cache and re-analyze all files")
+	rootCmd.PersistentFlags().BoolVar(&noCache, "no-cache", true, "Disable cache and re-analyze all files (default: true)")
 	rootCmd.PersistentFlags().BoolVar(&clearCache, "clear-cache", false, "Clear the cache before analyzing")
+
+	// Add flag to enable cache
+	enableCache := rootCmd.PersistentFlags().Bool("enable-cache", false, "Enable file cache for faster subsequent runs")
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		if *enableCache {
+			noCache = false
+		}
+	}
 	rootCmd.PersistentFlags().StringVar(&ignoreFile, "ignore-file", ".abcignore", "Path to ignore file")
 
 	rootCmd.AddCommand(initConfigCmd)
@@ -704,8 +712,10 @@ func getAnalyzerGroups() []analyzerGroup {
 			Name: "Code Quality",
 			Icon: "🎯",
 			Types: []string{
-				"HIGH_COMPLEXITY", "LONG_FUNCTION", "TOO_MANY_PARAMS", "DUPLICATE_CODE",
-				"UNUSED_PARAM", "TODO_FIXME", "SINGLE_LETTER_VAR", "MAGIC_NUMBER",
+				"HIGH_COMPLEXITY_O3", "HIGH_COMPLEXITY_O2_EXPENSIVE",
+				"POINTER_TO_SLICE", "USELESS_CONDITION", "EMPTY_ELSE",
+				"SLEEP_INSTEAD_OF_SYNC", "CONSOLE_LOG_DEBUGGING",
+				"HARDCODED_CONFIG", "PANIC_IN_LIBRARY", "GLOBAL_VARIABLE",
 			},
 		},
 		{

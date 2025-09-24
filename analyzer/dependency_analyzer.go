@@ -125,70 +125,85 @@ func (a *DependencyAnalyzer) Analyze(filename string, node interface{}, fset *to
 	for _, imp := range file.Imports {
 		if imp.Path != nil {
 			importPath := strings.Trim(imp.Path.Value, `"`)
-			a.checkImport(importPath, fset.Position(imp.Pos()), &issues)
+			issues = append(issues, a.checkImport(importPath, fset.Position(imp.Pos()))...)
 		}
 	}
 
 	// Check go.mod file once per project
 	if a.shouldCheckGoMod(filename) {
-		a.checkGoMod(&issues)
-		a.checkGoSum(&issues)
+		issues = append(issues, a.checkGoMod()...)
+		issues = append(issues, a.checkGoSum()...)
 	}
 
 	return issues
 }
 
-func (a *DependencyAnalyzer) checkImport(importPath string, pos token.Position, issues *[]Issue) {
+func (a *DependencyAnalyzer) checkImport(importPath string, pos token.Position) []Issue {
+	var issues []Issue
+
 	// Check for deprecated packages
 	if msg, deprecated := deprecatedPackages[importPath]; deprecated {
-		*issues = append(*issues, Issue{
-			Type:     "DEPENDENCY_DEPRECATED",
-			Message:  "Deprecated package: " + importPath + ". " + msg,
-			Position: pos,
-			Severity: SeverityMedium,
-		})
+		issues = append(
+			issues, Issue{
+				Type:     "DEPENDENCY_DEPRECATED",
+				Message:  "Deprecated package: " + importPath + ". " + msg,
+				Position: pos,
+				Severity: SeverityMedium,
+			},
+		)
 	}
 
 	// Check for C imports (cgo)
 	if importPath == "C" {
-		*issues = append(*issues, Issue{
-			Type:     "DEPENDENCY_CGO",
-			Message:  "Using cgo can cause portability and security issues",
-			Position: pos,
-			Severity: SeverityLow,
-		})
+		issues = append(
+			issues, Issue{
+				Type:     "DEPENDENCY_CGO",
+				Message:  "Using cgo can cause portability and security issues",
+				Position: pos,
+				Severity: SeverityLow,
+			},
+		)
 	}
 
 	// Check for unsafe package
 	if importPath == "unsafe" {
-		*issues = append(*issues, Issue{
-			Type:     "DEPENDENCY_UNSAFE",
-			Message:  "Using unsafe package bypasses Go's type safety",
-			Position: pos,
-			Severity: SeverityMedium,
-		})
+		issues = append(
+			issues, Issue{
+				Type:     "DEPENDENCY_UNSAFE",
+				Message:  "Using unsafe package bypasses Go's type safety",
+				Position: pos,
+				Severity: SeverityMedium,
+			},
+		)
 	}
 
 	// Check for internal packages from other modules
 	if strings.Contains(importPath, "/internal/") && !strings.HasPrefix(importPath, a.getModulePath()) {
-		*issues = append(*issues, Issue{
-			Type:     "DEPENDENCY_INTERNAL",
-			Message:  "Importing internal package from another module: " + importPath,
-			Position: pos,
-			Severity: SeverityHigh,
-		})
+		issues = append(
+			issues, Issue{
+				Type:     "DEPENDENCY_INTERNAL",
+				Message:  "Importing internal package from another module: " + importPath,
+				Position: pos,
+				Severity: SeverityHigh,
+			},
+		)
 	}
+
+	return issues
 }
 
-func (a *DependencyAnalyzer) checkGoMod(issues *[]Issue) {
+func (a *DependencyAnalyzer) checkGoMod() []Issue {
+	var issues []Issue
+	// Pre-allocate capacity to reduce allocations
+	issues = make([]Issue, 0, 100)
 	goModPath := filepath.Join(a.projectPath, "go.mod")
 	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
-		return
+		return issues
 	}
 
 	file, err := os.Open(goModPath)
 	if err != nil {
-		return
+		return issues
 	}
 	defer file.Close()
 
@@ -196,6 +211,7 @@ func (a *DependencyAnalyzer) checkGoMod(issues *[]Issue) {
 	lineNum := 0
 	inRequire := false
 	inReplace := false
+	var messageBuilder strings.Builder // Pre-allocate builder for reuse
 
 	for scanner.Scan() {
 		lineNum++
@@ -223,76 +239,45 @@ func (a *DependencyAnalyzer) checkGoMod(issues *[]Issue) {
 
 				// Check deprecated packages
 				if msg, deprecated := deprecatedPackages[pkg]; deprecated {
-					*issues = append(*issues, Issue{
-						Type:     "DEPENDENCY_DEPRECATED",
-						Message:  "Deprecated dependency in go.mod: " + pkg + ". " + msg,
-						Position: token.Position{Filename: goModPath, Line: lineNum},
-						Severity: SeverityMedium,
-					})
-				}
-
-				// Check for vulnerabilities using VulnerabilityChecker
-				if vulns, err := a.vulnChecker.CheckPackage(pkg, version); err == nil && len(vulns) > 0 {
-					for _, vuln := range vulns {
-						severity := SeverityMedium
-						if vuln.Severity == "CRITICAL" || vuln.Severity == "HIGH" {
-							severity = SeverityHigh
-						} else if vuln.Severity == "LOW" {
-							severity = SeverityLow
-						}
-
-						message := fmt.Sprintf("Vulnerable dependency: %s %s", pkg, version)
-						if vuln.CVE != "" {
-							message += " (" + vuln.CVE + ")"
-						}
-						if vuln.FixedIn != "" {
-							message += " - fixed in " + vuln.FixedIn
-						}
-
-						*issues = append(*issues, Issue{
-							Type:     "DEPENDENCY_VULNERABLE",
-							Message:  message,
+					issues = append(
+						issues, Issue{
+							Type:     "DEPENDENCY_DEPRECATED",
+							Message:  "Deprecated dependency in go.mod: " + pkg + ". " + msg,
 							Position: token.Position{Filename: goModPath, Line: lineNum},
-							Severity: severity,
-						})
-					}
-				} else {
-					// Fallback to static vulnerability data
-					if vulnVersions, hasVuln := vulnerablePackages[pkg]; hasVuln {
-						for _, vulnVersion := range vulnVersions {
-							if a.isVulnerableVersion(version, vulnVersion) {
-								*issues = append(*issues, Issue{
-									Type:     "DEPENDENCY_VULNERABLE",
-									Message:  "Vulnerable dependency: " + pkg + " " + version + " (known vulnerabilities in " + vulnVersion + ")",
-									Position: token.Position{Filename: goModPath, Line: lineNum},
-									Severity: SeverityHigh,
-								})
-							}
-						}
-					}
+							Severity: SeverityMedium,
+						},
+					)
 				}
+
+				// Check for vulnerabilities - extracted to avoid nested loop allocation
+				vulnIssues := a.checkPackageVulnerabilities(pkg, version, goModPath, lineNum, &messageBuilder)
+				issues = append(issues, vulnIssues...)
 
 				// Check for indirect dependencies
 				if strings.Contains(line, "// indirect") {
 					if strings.Contains(pkg, "github.com") || strings.Contains(pkg, "golang.org/x") {
 						// Only warn about significant indirect dependencies
-						*issues = append(*issues, Issue{
-							Type:     "DEPENDENCY_INDIRECT",
-							Message:  "Large number of indirect dependencies may indicate dependency bloat: " + pkg,
-							Position: token.Position{Filename: goModPath, Line: lineNum},
-							Severity: SeverityLow,
-						})
+						issues = append(
+							issues, Issue{
+								Type:     "DEPENDENCY_INDIRECT",
+								Message:  "Large number of indirect dependencies may indicate dependency bloat: " + pkg,
+								Position: token.Position{Filename: goModPath, Line: lineNum},
+								Severity: SeverityLow,
+							},
+						)
 					}
 				}
 
 				// Check for old versions
 				if a.isOldVersion(version) {
-					*issues = append(*issues, Issue{
-						Type:     "DEPENDENCY_OUTDATED",
-						Message:  "Potentially outdated dependency: " + pkg + " " + version,
-						Position: token.Position{Filename: goModPath, Line: lineNum},
-						Severity: SeverityLow,
-					})
+					issues = append(
+						issues, Issue{
+							Type:     "DEPENDENCY_OUTDATED",
+							Message:  "Potentially outdated dependency: " + pkg + " " + version,
+							Position: token.Position{Filename: goModPath, Line: lineNum},
+							Severity: SeverityLow,
+						},
+					)
 				}
 			}
 		}
@@ -300,54 +285,63 @@ func (a *DependencyAnalyzer) checkGoMod(issues *[]Issue) {
 		if inReplace && line != "" && !strings.HasPrefix(line, "//") {
 			// Check for local replacements
 			if strings.Contains(line, "=>") && (strings.Contains(line, "../") || strings.Contains(line, "./")) {
-				*issues = append(*issues, Issue{
-					Type:     "DEPENDENCY_LOCAL_REPLACE",
-					Message:  "Local replace directive found - may cause issues in CI/CD: " + line,
-					Position: token.Position{Filename: goModPath, Line: lineNum},
-					Severity: SeverityMedium,
-				})
+				issues = append(
+					issues, Issue{
+						Type:     "DEPENDENCY_LOCAL_REPLACE",
+						Message:  "Local replace directive found - may cause issues in CI/CD: " + line,
+						Position: token.Position{Filename: goModPath, Line: lineNum},
+						Severity: SeverityMedium,
+					},
+				)
 			}
 		}
 	}
+
+	return issues
 }
 
-func (a *DependencyAnalyzer) checkGoSum(issues *[]Issue) {
+func (a *DependencyAnalyzer) checkGoSum() []Issue {
+	var issues []Issue
 	goSumPath := filepath.Join(a.projectPath, "go.sum")
 	if _, err := os.Stat(goSumPath); os.IsNotExist(err) {
 		// Use go.mod path for better context
 		goModPath := filepath.Join(a.projectPath, "go.mod")
-		*issues = append(*issues, Issue{
-			Type:    "DEPENDENCY_NO_CHECKSUM",
-			Message: "go.sum file missing - dependencies are not locked",
-			Position: token.Position{
-				Filename: goModPath,
-				Line:     1,
-				Column:   1,
+		issues = append(
+			issues, Issue{
+				Type:    "DEPENDENCY_NO_CHECKSUM",
+				Message: "go.sum file missing - dependencies are not locked",
+				Position: token.Position{
+					Filename: goModPath,
+					Line:     1,
+					Column:   1,
+				},
+				Severity: SeverityHigh,
 			},
-			Severity: SeverityHigh,
-		})
-		return
+		)
+		return issues
 	}
 
 	// Check if go.sum is empty
 	info, err := os.Stat(goSumPath)
 	if err == nil && info.Size() == 0 {
-		*issues = append(*issues, Issue{
-			Type:    "DEPENDENCY_EMPTY_CHECKSUM",
-			Message: "go.sum file is empty - run 'go mod download' to populate",
-			Position: token.Position{
-				Filename: goSumPath,
-				Line:     1,
-				Column:   1,
+		issues = append(
+			issues, Issue{
+				Type:    "DEPENDENCY_EMPTY_CHECKSUM",
+				Message: "go.sum file is empty - run 'go mod download' to populate",
+				Position: token.Position{
+					Filename: goSumPath,
+					Line:     1,
+					Column:   1,
+				},
+				Severity: SeverityMedium,
 			},
-			Severity: SeverityMedium,
-		})
+		)
 	}
 
 	// Check for multiple versions of same package (can indicate conflicts)
 	file, err := os.Open(goSumPath)
 	if err != nil {
-		return
+		return issues
 	}
 	defer file.Close()
 
@@ -371,7 +365,11 @@ func (a *DependencyAnalyzer) checkGoSum(issues *[]Issue) {
 			// Extract major.minor version
 			versionParts := strings.Split(version, ".")
 			if len(versionParts) >= 2 {
-				majorMinor := versionParts[0] + "." + versionParts[1]
+				var majorMinorBuilder strings.Builder
+				majorMinorBuilder.WriteString(versionParts[0])
+				majorMinorBuilder.WriteString(".")
+				majorMinorBuilder.WriteString(versionParts[1])
+				majorMinor := majorMinorBuilder.String()
 				packageVersions[pkg] = appendUnique(packageVersions[pkg], majorMinor)
 			}
 		}
@@ -392,19 +390,94 @@ func (a *DependencyAnalyzer) checkGoSum(issues *[]Issue) {
 			}
 
 			if hasDifferentMajor {
-				*issues = append(*issues, Issue{
-					Type:    "DEPENDENCY_VERSION_CONFLICT",
-					Message: "Multiple major versions of " + pkg + " detected: " + strings.Join(versions, ", "),
-					Position: token.Position{
-						Filename: goSumPath,
-						Line:     1,
-						Column:   1,
+				var messageBuilder strings.Builder
+				messageBuilder.WriteString("Multiple major versions of ")
+				messageBuilder.WriteString(pkg)
+				messageBuilder.WriteString(" detected: ")
+				messageBuilder.WriteString(strings.Join(versions, ", "))
+
+				issues = append(
+					issues, Issue{
+						Type:    "DEPENDENCY_VERSION_CONFLICT",
+						Message: messageBuilder.String(),
+						Position: token.Position{
+							Filename: goSumPath,
+							Line:     1,
+							Column:   1,
+						},
+						Severity: SeverityMedium,
 					},
-					Severity: SeverityMedium,
-				})
+				)
 			}
 		}
 	}
+
+	return issues
+}
+
+// checkPackageVulnerabilities checks for vulnerabilities in a package and returns issues
+func (a *DependencyAnalyzer) checkPackageVulnerabilities(pkg, version, goModPath string, lineNum int, messageBuilder *strings.Builder) []Issue {
+	var vulnIssues []Issue
+
+	// Check for vulnerabilities using VulnerabilityChecker
+	if vulns, err := a.vulnChecker.CheckPackage(pkg, version); err == nil && len(vulns) > 0 {
+		// Pre-allocate slice for vulnerabilities
+		vulnIssues = make([]Issue, 0, len(vulns))
+
+		for _, vuln := range vulns {
+			severity := SeverityMedium
+			if vuln.Severity == "CRITICAL" || vuln.Severity == "HIGH" {
+				severity = SeverityHigh
+			} else if vuln.Severity == "LOW" {
+				severity = SeverityLow
+			}
+
+			messageBuilder.Reset() // Reset the builder for reuse
+			messageBuilder.WriteString(fmt.Sprintf("Vulnerable dependency: %s %s", pkg, version))
+			if vuln.CVE != "" {
+				messageBuilder.WriteString(" (")
+				messageBuilder.WriteString(vuln.CVE)
+				messageBuilder.WriteString(")")
+			}
+			if vuln.FixedIn != "" {
+				messageBuilder.WriteString(" - fixed in ")
+				messageBuilder.WriteString(vuln.FixedIn)
+			}
+
+			vulnIssues = append(vulnIssues, Issue{
+				Type:     "DEPENDENCY_VULNERABLE",
+				Message:  messageBuilder.String(),
+				Position: token.Position{Filename: goModPath, Line: lineNum},
+				Severity: severity,
+			})
+		}
+	} else {
+		// Fallback to static vulnerability data
+		if vulnVersions, hasVuln := vulnerablePackages[pkg]; hasVuln {
+			for _, vulnVersion := range vulnVersions {
+				if a.isVulnerableVersion(version, vulnVersion) {
+					messageBuilder.Reset()
+					messageBuilder.WriteString("Vulnerable dependency: ")
+					messageBuilder.WriteString(pkg)
+					messageBuilder.WriteString(" ")
+					messageBuilder.WriteString(version)
+					messageBuilder.WriteString(" (known vulnerabilities in ")
+					messageBuilder.WriteString(vulnVersion)
+					messageBuilder.WriteString(")")
+
+					vulnIssues = append(vulnIssues, Issue{
+						Type:     "DEPENDENCY_VULNERABLE",
+						Message:  messageBuilder.String(),
+						Position: token.Position{Filename: goModPath, Line: lineNum},
+						Severity: SeverityHigh,
+					})
+					break
+				}
+			}
+		}
+	}
+
+	return vulnIssues
 }
 
 func (a *DependencyAnalyzer) shouldCheckGoMod(filename string) bool {

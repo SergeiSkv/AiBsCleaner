@@ -21,6 +21,7 @@ type Issue struct {
 	Suggestion string
 	Code       string
 	CanBeFixed bool
+	WhyBad     string // Detailed explanation why this is problematic
 }
 
 type Analyzer interface {

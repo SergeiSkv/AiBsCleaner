@@ -168,14 +168,22 @@ func (ca *ChannelAnalyzer) analyzeChannelReceive(recv *ast.UnaryExpr, fset *toke
 }
 
 func (ca *ChannelAnalyzer) analyzeChannelClose(call *ast.CallExpr, fset *token.FileSet) {
-	if ident, ok := call.Fun.(*ast.Ident); ok { //nolint:nestif // AST analysis requires nested checks
-		if ident.Name == "close" && len(call.Args) > 0 {
-			if chanIdent, ok := call.Args[0].(*ast.Ident); ok {
-				if info, exists := ca.channels[chanIdent.Name]; exists {
-					info.Closes = append(info.Closes, fset.Position(call.Pos()))
-				}
-			}
-		}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return
+	}
+
+	if ident.Name != "close" || len(call.Args) == 0 {
+		return
+	}
+
+	chanIdent, ok := call.Args[0].(*ast.Ident)
+	if !ok {
+		return
+	}
+
+	if info, exists := ca.channels[chanIdent.Name]; exists {
+		info.Closes = append(info.Closes, fset.Position(call.Pos()))
 	}
 }
 

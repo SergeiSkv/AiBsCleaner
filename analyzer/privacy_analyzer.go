@@ -65,18 +65,18 @@ func (a *PrivacyAnalyzer) Analyze(filename string, node interface{}, fset *token
 		astNode, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.GenDecl:
-				a.checkGenDecl(node, fset, &issues, isTestFile)
+				issues = append(issues, a.checkGenDecl(node, fset, isTestFile)...)
 			case *ast.AssignStmt:
-				a.checkAssignment(node, fset, &issues, isTestFile)
+				issues = append(issues, a.checkAssignment(node, fset, isTestFile)...)
 				a.trackDataFlow(node) // Track data flow for encryption detection
 			case *ast.BasicLit:
-				a.checkLiteral(node, fset, &issues, isTestFile)
+				issues = append(issues, a.checkLiteral(node, fset, isTestFile)...)
 			case *ast.CallExpr:
-				a.checkFunctionCall(node, fset, &issues)
-				a.trackEncryption(node)                    // Track encryption function calls
-				a.checkDatabaseWrites(node, fset, &issues) // Check for unencrypted DB writes
+				issues = append(issues, a.checkFunctionCall(node, fset)...)
+				a.trackEncryption(node)                                       // Track encryption function calls
+				issues = append(issues, a.checkDatabaseWrites(node, fset)...) // Check for unencrypted DB writes
 			case *ast.Field:
-				a.checkStructField(node, fset, &issues)
+				issues = append(issues, a.checkStructField(node, fset)...)
 			}
 			return true
 		},
@@ -85,9 +85,10 @@ func (a *PrivacyAnalyzer) Analyze(filename string, node interface{}, fset *token
 	return issues
 }
 
-func (a *PrivacyAnalyzer) checkGenDecl(decl *ast.GenDecl, fset *token.FileSet, issues *[]Issue, isTestFile bool) {
+func (a *PrivacyAnalyzer) checkGenDecl(decl *ast.GenDecl, fset *token.FileSet, isTestFile bool) []Issue {
+	var issues []Issue
 	if decl.Tok != token.CONST && decl.Tok != token.VAR {
-		return
+		return nil
 	}
 
 	for _, spec := range decl.Specs {
@@ -99,79 +100,122 @@ func (a *PrivacyAnalyzer) checkGenDecl(decl *ast.GenDecl, fset *token.FileSet, i
 		for i, name := range valueSpec.Names {
 			nameStr := name.Name
 
-			// Check for sensitive variable names
-			if a.isSensitiveName(nameStr) {
-				// Check if it's hardcoded
-				if i < len(valueSpec.Values) {
-					if lit, ok := valueSpec.Values[i].(*ast.BasicLit); ok {
-						if lit.Kind == token.STRING && lit.Value != `""` && lit.Value != `"` {
-							value := strings.Trim(lit.Value, `"`)
-							if !strings.HasPrefix(value, "${") && !strings.HasPrefix(value, "{{") {
-								var severity = SeverityHigh
-								if isTestFile {
-									severity = SeverityLow
-								}
-								*issues = append(*issues, createIssue(fset, name.Pos(),
-									"PRIVACY_HARDCODED_SECRET",
-									"Hardcoded sensitive value in variable: "+nameStr,
-									severity))
-							}
-						}
-					}
-				}
+			// Skip if not sensitive
+			if !a.isSensitiveName(nameStr) {
+				continue
 			}
+
+			// Skip if no value
+			if i >= len(valueSpec.Values) {
+				continue
+			}
+
+			lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+			if !ok {
+				continue
+			}
+
+			// Skip if not string or empty
+			if lit.Kind != token.STRING || lit.Value == `""` || lit.Value == `"` {
+				continue
+			}
+
+			value := strings.Trim(lit.Value, `"`)
+			// Skip if template variable
+			if strings.HasPrefix(value, "${") || strings.HasPrefix(value, "{{") {
+				continue
+			}
+
+			var severity = SeverityHigh
+			if isTestFile {
+				severity = SeverityLow
+			}
+			issues = append(
+				issues, createIssue(
+					fset, name.Pos(),
+					"PRIVACY_HARDCODED_SECRET",
+					"Hardcoded sensitive value in variable: "+nameStr,
+					severity,
+				),
+			)
 		}
 	}
+	return issues
 }
 
-func (a *PrivacyAnalyzer) checkAssignment(assign *ast.AssignStmt, fset *token.FileSet, issues *[]Issue, isTestFile bool) {
+func (a *PrivacyAnalyzer) checkAssignment(assign *ast.AssignStmt, fset *token.FileSet, isTestFile bool) []Issue {
+	var issues []Issue
 	for i, lhs := range assign.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if a.isSensitiveName(ident.Name) {
-				if i < len(assign.Rhs) {
-					if lit, ok := assign.Rhs[i].(*ast.BasicLit); ok {
-						if lit.Kind == token.STRING && lit.Value != `""` {
-							value := strings.Trim(lit.Value, `"`)
-							if !strings.HasPrefix(value, "${") && !strings.HasPrefix(value, "{{") && len(value) > 0 {
-								var severity Severity = SeverityHigh
-								if isTestFile {
-									severity = SeverityLow
-								}
-								*issues = append(*issues, createIssue(fset, ident.Pos(),
-									"PRIVACY_HARDCODED_SECRET",
-									"Hardcoded sensitive value assigned to: "+ident.Name,
-									severity))
-							}
-						}
-					}
-				}
-			}
+		ident, ok := lhs.(*ast.Ident)
+		if !ok {
+			continue
 		}
+
+		if !a.isSensitiveName(ident.Name) {
+			continue
+		}
+
+		if i >= len(assign.Rhs) {
+			continue
+		}
+
+		lit, ok := assign.Rhs[i].(*ast.BasicLit)
+		if !ok {
+			continue
+		}
+
+		if lit.Kind != token.STRING || lit.Value == `""` {
+			continue
+		}
+
+		value := strings.Trim(lit.Value, `"`)
+		if strings.HasPrefix(value, "${") || strings.HasPrefix(value, "{{") || len(value) == 0 {
+			continue
+		}
+
+		var severity Severity = SeverityHigh
+		if isTestFile {
+			severity = SeverityLow
+		}
+		issues = append(
+			issues, createIssue(
+				fset, ident.Pos(),
+				"PRIVACY_HARDCODED_SECRET",
+				"Hardcoded sensitive value assigned to: "+ident.Name,
+				severity,
+			),
+		)
 	}
+	return issues
 }
 
-func (a *PrivacyAnalyzer) checkLiteral(lit *ast.BasicLit, fset *token.FileSet, issues *[]Issue, isTestFile bool) {
+func (a *PrivacyAnalyzer) checkLiteral(lit *ast.BasicLit, fset *token.FileSet, isTestFile bool) []Issue {
+	var issues []Issue
 	if lit.Kind != token.STRING {
-		return
+		return nil
 	}
 
 	value := strings.Trim(lit.Value, `"`)
 	if len(value) < 10 {
-		return
+		return nil
 	}
 
 	// Skip example/placeholder values
 	if strings.Contains(value, "example") || strings.Contains(value, "your-") ||
 		strings.Contains(value, "xxx") || strings.Contains(value, "...") {
-		return
+		return nil
 	}
 
 	// Check for hardcoded secrets
 	if awsKeyPattern.MatchString(value) {
-		*issues = append(*issues, createIssue(fset, lit.Pos(),
-			"PRIVACY_AWS_KEY",
-			"Potential AWS access key found in code",
-			SeverityHigh))
+		issues = append(
+			issues, createIssue(
+				fset, lit.Pos(),
+				"PRIVACY_AWS_KEY",
+				"Potential AWS access key found in code",
+				SeverityHigh,
+			),
+		)
 	}
 
 	if hardcodedJWT.MatchString(value) {
@@ -179,77 +223,115 @@ func (a *PrivacyAnalyzer) checkLiteral(lit *ast.BasicLit, fset *token.FileSet, i
 		if isTestFile {
 			severity = SeverityMedium
 		}
-		*issues = append(*issues, createIssue(fset, lit.Pos(),
-			"PRIVACY_JWT_TOKEN",
-			"Hardcoded JWT token found",
-			severity))
+		issues = append(
+			issues, createIssue(
+				fset, lit.Pos(),
+				"PRIVACY_JWT_TOKEN",
+				"Hardcoded JWT token found",
+				severity,
+			),
+		)
 	}
 
 	// Check for PII in non-test files
 	if !isTestFile {
 		if emailPattern.MatchString(value) && !strings.Contains(value, "@example.") {
-			*issues = append(*issues, createIssue(fset, lit.Pos(),
-				"PRIVACY_EMAIL_PII",
-				"Email address found in code (potential PII)",
-				SeverityMedium))
+			issues = append(
+				issues, createIssue(
+					fset, lit.Pos(),
+					"PRIVACY_EMAIL_PII",
+					"Email address found in code (potential PII)",
+					SeverityMedium,
+				),
+			)
 		}
 
 		if ssnPattern.MatchString(value) {
-			*issues = append(*issues, createIssue(fset, lit.Pos(),
-				"PRIVACY_SSN_PII",
-				"SSN pattern found in code (potential PII)",
-				SeverityHigh))
+			issues = append(
+				issues, createIssue(
+					fset, lit.Pos(),
+					"PRIVACY_SSN_PII",
+					"SSN pattern found in code (potential PII)",
+					SeverityHigh,
+				),
+			)
 		}
 
 		if ccPattern.MatchString(value) && !strings.Contains(value, "0000") {
-			*issues = append(*issues, createIssue(fset, lit.Pos(),
-				"PRIVACY_CREDIT_CARD_PII",
-				"Credit card pattern found in code (potential PII)",
-				SeverityHigh))
+			issues = append(
+				issues, createIssue(
+					fset, lit.Pos(),
+					"PRIVACY_CREDIT_CARD_PII",
+					"Credit card pattern found in code (potential PII)",
+					SeverityHigh,
+				),
+			)
 		}
 	}
+	return issues
 }
 
-func (a *PrivacyAnalyzer) checkFunctionCall(call *ast.CallExpr, fset *token.FileSet, issues *[]Issue) {
+func (a *PrivacyAnalyzer) checkFunctionCall(call *ast.CallExpr, fset *token.FileSet) []Issue {
+	var issues []Issue
+
+	fun, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return issues
+	}
+
+	funcName := fun.Sel.Name
+
 	// Check for logging sensitive data
-	if fun, ok := call.Fun.(*ast.SelectorExpr); ok {
-		funcName := fun.Sel.Name
-		if isLoggingFunction(funcName) {
-			for _, arg := range call.Args {
-				if ident, ok := arg.(*ast.Ident); ok {
-					if a.isSensitiveName(ident.Name) {
-						*issues = append(*issues, createIssue(fset, call.Pos(),
-							"PRIVACY_LOGGING_SENSITIVE",
-							"Logging potentially sensitive data: "+ident.Name,
-							SeverityMedium))
-					}
-				}
+	if isLoggingFunction(funcName) {
+		for _, arg := range call.Args {
+			ident, ok := arg.(*ast.Ident)
+			if !ok {
+				continue
 			}
+			if !a.isSensitiveName(ident.Name) {
+				continue
+			}
+			issues = append(
+				issues, createIssue(
+					fset, call.Pos(),
+					"PRIVACY_LOGGING_SENSITIVE",
+					"Logging potentially sensitive data: "+ident.Name,
+					SeverityMedium,
+				),
+			)
 		}
 	}
 
 	// Check fmt.Printf/Sprintf for sensitive data
-	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "fmt" {
-			if sel.Sel.Name == "Printf" || sel.Sel.Name == "Sprintf" || sel.Sel.Name == "Fprintf" {
-				for _, arg := range call.Args[1:] { // Skip format string
-					if ident, ok := arg.(*ast.Ident); ok {
-						if a.isSensitiveName(ident.Name) {
-							*issues = append(*issues, createIssue(fset, call.Pos(),
-								"PRIVACY_PRINTING_SENSITIVE",
-								"Printing potentially sensitive data: "+ident.Name,
-								SeverityMedium))
-						}
-					}
+	ident, ok := fun.X.(*ast.Ident)
+	if ok && ident.Name == "fmt" {
+		if funcName == "Printf" || funcName == "Sprintf" || funcName == "Fprintf" {
+			for _, arg := range call.Args[1:] { // Skip format string
+				argIdent, ok := arg.(*ast.Ident)
+				if !ok {
+					continue
 				}
+				if !a.isSensitiveName(argIdent.Name) {
+					continue
+				}
+				issues = append(
+					issues, createIssue(
+						fset, call.Pos(),
+						"PRIVACY_PRINTING_SENSITIVE",
+						"Printing potentially sensitive data: "+argIdent.Name,
+						SeverityMedium,
+					),
+				)
 			}
 		}
 	}
+	return issues
 }
 
-func (a *PrivacyAnalyzer) checkStructField(field *ast.Field, fset *token.FileSet, issues *[]Issue) {
+func (a *PrivacyAnalyzer) checkStructField(field *ast.Field, fset *token.FileSet) []Issue {
+	var issues []Issue
 	if field.Tag == nil {
-		return
+		return nil
 	}
 
 	tag := strings.Trim(field.Tag.Value, "`")
@@ -260,14 +342,19 @@ func (a *PrivacyAnalyzer) checkStructField(field *ast.Field, fset *token.FileSet
 			// Check if field is exposed in JSON without omitempty or -
 			if strings.Contains(tag, "json:") && !strings.Contains(tag, "json:\"-\"") {
 				if !strings.Contains(tag, "omitempty") {
-					*issues = append(*issues, createIssue(fset, field.Pos(),
-						"PRIVACY_EXPOSED_FIELD",
-						"Sensitive field exposed in JSON without omitempty: "+name.Name,
-						SeverityMedium))
+					issues = append(
+						issues, createIssue(
+							fset, field.Pos(),
+							"PRIVACY_EXPOSED_FIELD",
+							"Sensitive field exposed in JSON without omitempty: "+name.Name,
+							SeverityMedium,
+						),
+					)
 				}
 			}
 		}
 	}
+	return issues
 }
 
 func (a *PrivacyAnalyzer) isSensitiveName(name string) bool {
@@ -325,41 +412,51 @@ func createIssue(fset *token.FileSet, pos token.Pos, issueType string, message s
 func (a *PrivacyAnalyzer) trackDataFlow(assign *ast.AssignStmt) {
 	// Track assignments from user input functions
 	for i, rhs := range assign.Rhs {
-		if call, ok := rhs.(*ast.CallExpr); ok {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				// Check for user input methods
-				if isUserInputFunction(sel.Sel.Name) {
-					// Mark LHS variables as user input
-					if i < len(assign.Lhs) {
-						if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
-							a.userInputVars[ident.Name] = true
-						}
-					}
-				}
-				// Check for encryption functions
-				if isEncryptionFunction(sel.Sel.Name) {
-					// Mark LHS variables as encrypted
-					if i < len(assign.Lhs) {
-						if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
-							a.encryptedVars[ident.Name] = true
-							// Remove from userInputVars if it was there
-							delete(a.userInputVars, ident.Name)
-						}
-					}
+		call, ok := rhs.(*ast.CallExpr)
+		if !ok {
+			// Track variable-to-variable assignments
+			ident, ok := rhs.(*ast.Ident)
+			if !ok || i >= len(assign.Lhs) {
+				continue
+			}
+
+			lhsIdent, ok := assign.Lhs[i].(*ast.Ident)
+			if !ok {
+				continue
+			}
+
+			if a.encryptedVars[ident.Name] {
+				a.encryptedVars[lhsIdent.Name] = true
+			}
+			if a.userInputVars[ident.Name] {
+				a.userInputVars[lhsIdent.Name] = true
+			}
+			continue
+		}
+
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+
+		// Check for user input methods
+		if isUserInputFunction(sel.Sel.Name) {
+			// Mark LHS variables as user input
+			if i < len(assign.Lhs) {
+				if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
+					a.userInputVars[ident.Name] = true
 				}
 			}
 		}
 
-		// Track variable-to-variable assignments
-		if ident, ok := rhs.(*ast.Ident); ok {
-			if a.encryptedVars[ident.Name] && i < len(assign.Lhs) {
-				if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
-					a.encryptedVars[lhsIdent.Name] = true
-				}
-			}
-			if a.userInputVars[ident.Name] && i < len(assign.Lhs) {
-				if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
-					a.userInputVars[lhsIdent.Name] = true
+		// Check for encryption functions
+		if isEncryptionFunction(sel.Sel.Name) {
+			// Mark LHS variables as encrypted
+			if i < len(assign.Lhs) {
+				if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
+					a.encryptedVars[ident.Name] = true
+					// Remove from userInputVars if it was there
+					delete(a.userInputVars, ident.Name)
 				}
 			}
 		}
@@ -381,20 +478,23 @@ func (a *PrivacyAnalyzer) trackEncryption(call *ast.CallExpr) {
 }
 
 // checkDatabaseWrites checks for potentially unencrypted sensitive data in database operations
-func (a *PrivacyAnalyzer) checkDatabaseWrites(call *ast.CallExpr, fset *token.FileSet, issues *[]Issue) {
+func (a *PrivacyAnalyzer) checkDatabaseWrites(call *ast.CallExpr, fset *token.FileSet) []Issue {
+	var issues []Issue
 	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 		// Check for database operations
 		if isDatabaseOperation(sel.Sel.Name) {
 			// Check arguments for sensitive data
 			for _, arg := range call.Args {
-				a.checkDatabaseArgument(arg, fset, issues)
+				issues = append(issues, a.checkDatabaseArgument(arg, fset)...)
 			}
 		}
 	}
+	return issues
 }
 
 // checkDatabaseArgument checks if a database argument contains unencrypted sensitive data
-func (a *PrivacyAnalyzer) checkDatabaseArgument(arg ast.Expr, fset *token.FileSet, issues *[]Issue) {
+func (a *PrivacyAnalyzer) checkDatabaseArgument(arg ast.Expr, fset *token.FileSet) []Issue {
+	var issues []Issue
 	switch expr := arg.(type) {
 	case *ast.BasicLit:
 		// Check for SQL queries with sensitive fields
@@ -425,23 +525,32 @@ func (a *PrivacyAnalyzer) checkDatabaseArgument(arg ast.Expr, fset *token.FileSe
 				message = "Verify that " + expr.Name + " is properly encrypted before database storage"
 			}
 
-			*issues = append(*issues, createIssue(fset, expr.Pos(),
-				"PRIVACY_UNENCRYPTED_DB_WRITE",
-				message,
-				severity))
+			issues = append(
+				issues, createIssue(
+					fset, expr.Pos(),
+					"PRIVACY_UNENCRYPTED_DB_WRITE",
+					message,
+					severity,
+				),
+			)
 		}
 
 	case *ast.CallExpr:
 		// Check for direct user input functions
 		if sel, ok := expr.Fun.(*ast.SelectorExpr); ok {
 			if isUserInputFunction(sel.Sel.Name) {
-				*issues = append(*issues, createIssue(fset, expr.Pos(),
-					"PRIVACY_DIRECT_INPUT_TO_DB",
-					"Direct user input to database without encryption: "+sel.Sel.Name,
-					SeverityHigh))
+				issues = append(
+					issues, createIssue(
+						fset, expr.Pos(),
+						"PRIVACY_DIRECT_INPUT_TO_DB",
+						"Direct user input to database without encryption: "+sel.Sel.Name,
+						SeverityHigh,
+					),
+				)
 			}
 		}
 	}
+	return issues
 }
 
 // Helper function to check if a function is a user input source

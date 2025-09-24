@@ -91,8 +91,6 @@ func (p *PerfCheckerPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 
 	// Convert our analyzers to analysis.Analyzer format
 	analyzers = append(analyzers, p.createAnalyzer("loop", analyzer.NewLoopAnalyzer()))
-	analyzers = append(analyzers, p.createAnalyzer("string-concat", analyzer.NewStringConcatAnalyzer()))
-	analyzers = append(analyzers, p.createAnalyzer("defer", analyzer.NewDeferAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("defer-optimization", analyzer.NewDeferOptimizationAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("slice", analyzer.NewSliceAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("map", analyzer.NewMapAnalyzer()))
@@ -101,19 +99,16 @@ func (p *PerfCheckerPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	analyzers = append(analyzers, p.createAnalyzer("interface", analyzer.NewInterfaceAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("regex", analyzer.NewRegexAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("time", analyzer.NewTimeAnalyzer()))
-	analyzers = append(analyzers, p.createAnalyzer("complexity", analyzer.NewComplexityAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("memory-leak", analyzer.NewMemoryLeakAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("test-coverage", analyzer.NewTestCoverageAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("database", analyzer.NewDatabaseAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("nilptr", analyzer.NewNilPtrAnalyzer()))
-	analyzers = append(analyzers, p.createAnalyzer("code-smell", analyzer.NewCodeSmellAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("api-misuse", analyzer.NewAPIMisuseAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("ai-bullshit", analyzer.NewAIBullshitAnalyzer()))
 	// New analyzers
 	analyzers = append(analyzers, p.createAnalyzer("context", analyzer.NewContextAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("channel", analyzer.NewChannelAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("race-condition", analyzer.NewRaceConditionAnalyzer()))
-	analyzers = append(analyzers, p.createAnalyzer("error-handling", analyzer.NewErrorHandlingAnalyzer()))
 	analyzers = append(analyzers, p.createAnalyzer("http-client", analyzer.NewHTTPClientAnalyzer()))
 
 	return analyzers, nil

@@ -35,107 +35,84 @@ func (ic *IgnoreChecker) parseIgnoreComments() {
 	// Check all comment groups in the file
 	for _, cg := range ic.file.Comments {
 		for _, c := range cg.List {
-			text := c.Text
-
-			// Remove comment markers
-			if strings.HasPrefix(text, "//") {
-				text = strings.TrimPrefix(text, "//")
-			} else if strings.HasPrefix(text, "/*") {
-				text = strings.TrimPrefix(text, "/*")
-				text = strings.TrimSuffix(text, "*/")
-			}
-			text = strings.TrimSpace(text)
-
-			// Check for abc:ignore directives
+			text := ic.extractCommentText(c.Text)
 			if strings.HasPrefix(text, "abc:ignore") {
-				pos := ic.fset.Position(c.Pos())
-				line := pos.Line
+				ic.processIgnoreDirective(text, c.Pos())
+			}
+		}
+	}
+}
 
-				// Parse the ignore directive
-				parts := strings.Split(text, " ")
-				if len(parts) == 1 {
-					// abc:ignore - ignores next line for all issue types
-					ir := ignoreRange{
-						startLine: line + 1,
-						endLine:   line + 1,
-						issueType: "",
-					}
-					ic.ignoreRanges[""] = append(ic.ignoreRanges[""], ir)
+// extractCommentText removes comment markers and trims the text
+func (ic *IgnoreChecker) extractCommentText(text string) string {
+	if strings.HasPrefix(text, "//") {
+		text = strings.TrimPrefix(text, "//")
+	} else if strings.HasPrefix(text, "/*") {
+		text = strings.TrimPrefix(text, "/*")
+		text = strings.TrimSuffix(text, "*/")
+	}
+	return strings.TrimSpace(text)
+}
+
+// processIgnoreDirective processes a single ignore directive
+func (ic *IgnoreChecker) processIgnoreDirective(text string, pos token.Pos) {
+	position := ic.fset.Position(pos)
+	line := position.Line
+	parts := strings.Split(text, " ")
+
+	if len(parts) == 1 {
+		// Simple abc:ignore - ignores next line for all issue types
+		ic.addIgnoreRange("", line+1, line+1)
+	} else {
+		directive := parts[0]
+		var issueTypes []string
+		if len(parts) > 1 {
+			issueTypes = strings.Split(parts[1], ",")
+		}
+		ic.processSpecificDirective(directive, issueTypes, line)
+	}
+}
+
+// addIgnoreRange adds an ignore range for the given issue type
+func (ic *IgnoreChecker) addIgnoreRange(issueType string, startLine, endLine int) {
+	ir := ignoreRange{
+		startLine: startLine,
+		endLine:   endLine,
+		issueType: issueType,
+	}
+	ic.ignoreRanges[issueType] = append(ic.ignoreRanges[issueType], ir)
+}
+
+// processSpecificDirective handles specific ignore directives
+func (ic *IgnoreChecker) processSpecificDirective(directive string, issueTypes []string, line int) {
+	switch directive {
+	case "abc:ignore-line":
+		for _, issueType := range issueTypes {
+			ic.addIgnoreRange(strings.TrimSpace(issueType), line, line)
+		}
+	case "abc:ignore-next-line":
+		for _, issueType := range issueTypes {
+			ic.addIgnoreRange(strings.TrimSpace(issueType), line+1, line+1)
+		}
+	case "abc:ignore-file":
+		for _, issueType := range issueTypes {
+			if issueType == "" {
+				issueType = "*" // Ignore all types for entire file
+			}
+			ic.addIgnoreRange(strings.TrimSpace(issueType), 0, 999999)
+		}
+	case "abc:ignore":
+		// Default behavior
+		if len(issueTypes) == 0 {
+			ic.addIgnoreRange("", line+1, line+1)
+		} else {
+			for _, issueType := range issueTypes {
+				issueType = strings.TrimSpace(issueType)
+				// For loop-related issues, ignore a range of lines
+				if strings.Contains(issueType, "_IN_LOOP") || strings.Contains(issueType, "LOOP_") {
+					ic.addIgnoreRange(issueType, line+1, line+10)
 				} else {
-					// abc:ignore TYPE - ignores next line for specific type
-					// abc:ignore-line TYPE - ignores current line for specific type
-					// abc:ignore-next-line TYPE - ignores next line for specific type
-					// abc:ignore-file TYPE - ignores entire file for specific type
-
-					directive := parts[0]
-					var issueTypes []string
-					if len(parts) > 1 {
-						issueTypes = strings.Split(parts[1], ",")
-					}
-
-					switch directive {
-					case "abc:ignore-line":
-						for _, issueType := range issueTypes {
-							ir := ignoreRange{
-								startLine: line,
-								endLine:   line,
-								issueType: strings.TrimSpace(issueType),
-							}
-							ic.ignoreRanges[ir.issueType] = append(ic.ignoreRanges[ir.issueType], ir)
-						}
-					case "abc:ignore-next-line":
-						for _, issueType := range issueTypes {
-							ir := ignoreRange{
-								startLine: line + 1,
-								endLine:   line + 1,
-								issueType: strings.TrimSpace(issueType),
-							}
-							ic.ignoreRanges[ir.issueType] = append(ic.ignoreRanges[ir.issueType], ir)
-						}
-					case "abc:ignore-file":
-						for _, issueType := range issueTypes {
-							if issueType == "" {
-								issueType = "*" // Ignore all types for entire file
-							}
-							ir := ignoreRange{
-								startLine: 0,
-								endLine:   999999, // Large number to cover entire file
-								issueType: strings.TrimSpace(issueType),
-							}
-							ic.ignoreRanges[ir.issueType] = append(ic.ignoreRanges[ir.issueType], ir)
-						}
-					case "abc:ignore":
-						// Default behavior - ignore next line and a range of lines for loop issues
-						if len(issueTypes) == 0 {
-							// No specific types, ignore all on next line
-							ir := ignoreRange{
-								startLine: line + 1,
-								endLine:   line + 1,
-								issueType: "",
-							}
-							ic.ignoreRanges[""] = append(ic.ignoreRanges[""], ir)
-						} else {
-							for _, issueType := range issueTypes {
-								issueType = strings.TrimSpace(issueType)
-								// For loop-related issues, ignore a range of lines
-								if strings.Contains(issueType, "_IN_LOOP") || strings.Contains(issueType, "LOOP_") {
-									ir := ignoreRange{
-										startLine: line + 1,
-										endLine:   line + 10, // Cover the loop body
-										issueType: issueType,
-									}
-									ic.ignoreRanges[issueType] = append(ic.ignoreRanges[issueType], ir)
-								} else {
-									ir := ignoreRange{
-										startLine: line + 1,
-										endLine:   line + 1,
-										issueType: issueType,
-									}
-									ic.ignoreRanges[issueType] = append(ic.ignoreRanges[issueType], ir)
-								}
-							}
-						}
-					}
+					ic.addIgnoreRange(issueType, line+1, line+1)
 				}
 			}
 		}

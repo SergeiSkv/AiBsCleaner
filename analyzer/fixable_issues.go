@@ -27,11 +27,8 @@ func IsFixableIssue(issueType string) bool {
 		"INEFFICIENT_RANGE":       true,
 		"UNNECESSARY_COPY":        true,
 
-		// Error handling
-		"UNCHECKED_ERROR":     true,
-		"ERROR_IGNORED":       true,
-		"ERROR_CHECK_MISSING": true,
-		"NIL_CHECK":           true,
+		// Nil checking (not error handling - that's for errcheck linter)
+		"NIL_CHECK": true,
 
 		// Defer operations
 		"MISSING_DEFER_CLOSE":  true,
@@ -88,7 +85,6 @@ func GetFixComplexity(issueType string) string {
 		"TIME_NOW_IN_LOOP":        "SIMPLE",
 		"APPEND_WITHOUT_CAPACITY": "SIMPLE",
 		"MAP_CAPACITY":            "SIMPLE",
-		"UNCHECKED_ERROR":         "SIMPLE",
 		"MISSING_DEFER_CLOSE":     "SIMPLE",
 		"MISSING_DEFER_UNLOCK":    "SIMPLE",
 
@@ -97,7 +93,6 @@ func GetFixComplexity(issueType string) string {
 		"INEFFICIENT_RANGE":    "MEDIUM",
 		"REGEX_COMPILE":        "MEDIUM",
 		"JSON_MARSHAL_IN_LOOP": "MEDIUM",
-		"ERROR_CHECK_MISSING":  "MEDIUM",
 		"EMPTY_INTERFACE":      "MEDIUM",
 		"INTERFACE_ALLOCATION": "MEDIUM",
 
