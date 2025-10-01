@@ -5,11 +5,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 const (
@@ -26,33 +29,24 @@ type FileCache struct {
 }
 
 type CacheData struct {
-	Version      string                 `json:"version"`
-	Files        map[string]*FileRecord `json:"files"`
-	IgnoredRules map[string][]string    `json:"ignored_rules"` // file -> []rule_types
-	Stats        *CacheStats            `json:"stats"`
-	LastUpdated  time.Time              `json:"last_updated"`
+	Version      string        `json:"version"`
+	Files        []*FileRecord `json:"files"`
+	IgnoredRules []IgnoredRule `json:"ignored_rules"`
+	Stats        *CacheStats   `json:"stats"`
+	LastUpdated  time.Time     `json:"last_updated"`
+}
+
+type IgnoredRule struct {
+	FilePattern string   `json:"file_pattern"`
+	RuleTypes   []string `json:"rule_types"`
 }
 
 type FileRecord struct {
-	Path         string    `json:"path"`
-	Hash         string    `json:"hash"`
-	LastAnalyzed time.Time `json:"last_analyzed"`
-	Issues       []*Issue  `json:"issues"`
-	Ignored      []string  `json:"ignored"` // Issue IDs that are ignored
-}
-
-type Issue struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"` // Changed from analyzer.IssueType
-	Line       int       `json:"line"`
-	Column     int       `json:"column"`
-	Message    string    `json:"message"`
-	Severity   string    `json:"severity"` // Changed from analyzer.SeverityLevel
-	Suggestion string    `json:"suggestion"`
-	CanBeFixed bool      `json:"can_be_fixed"`
-	IgnoredAt  time.Time `json:"ignored_at,omitempty"`
-	FixedAt    time.Time `json:"fixed_at,omitempty"`
-	IgnoreType string    `json:"ignore_type,omitempty"` // "comment", "manual", "config"
+	Path         string          `json:"path"`
+	Hash         string          `json:"hash"`
+	LastAnalyzed time.Time       `json:"last_analyzed"`
+	Issues       []*models.Issue `json:"issues"`
+	Ignored      []string        `json:"ignored"` // Issue IDs that are ignored
 }
 
 type CacheStats struct {
@@ -67,8 +61,8 @@ type CacheStats struct {
 
 // Entry represents a cache entry (used by HybridCache)
 type Entry struct {
-	Hash   string    `json:"hash"`
-	Issues []*Issue  `json:"issues"`
+	Hash   string          `json:"hash"`
+	Issues []*models.Issue `json:"issues"`
 }
 
 // New creates a new file-based cache
@@ -94,8 +88,8 @@ func New(baseDir string) (*FileCache, error) {
 		cacheDir: cacheDir,
 		data: &CacheData{
 			Version:      CacheVersion,
-			Files:        make(map[string]*FileRecord),
-			IgnoredRules: make(map[string][]string),
+			Files:        make([]*FileRecord, 0, 100),
+			IgnoredRules: make([]IgnoredRule, 0, 10),
 			Stats:        &CacheStats{},
 			LastUpdated:  time.Now(),
 		},
@@ -117,7 +111,7 @@ func (fc *FileCache) load() error {
 	defer fc.mu.Unlock()
 
 	cacheFile := filepath.Join(fc.cacheDir, CacheFile)
-	data, err := os.ReadFile(cacheFile)
+	file, err := os.Open(cacheFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// No cache file yet, that's OK
@@ -125,9 +119,13 @@ func (fc *FileCache) load() error {
 		}
 		return err
 	}
+	defer func() { _ = file.Close() }()
 
+	// Use streaming decoder to reduce memory pressure and improve performance
 	var cacheData CacheData
-	if err := json.Unmarshal(data, &cacheData); err != nil {
+	decoder := json.NewDecoder(file)
+	decoder.UseNumber() // Use Number for better performance with large numbers
+	if err := decoder.Decode(&cacheData); err != nil {
 		return fmt.Errorf("failed to unmarshal cache: %w", err)
 	}
 
@@ -141,14 +139,18 @@ func (fc *FileCache) load() error {
 	return nil
 }
 
-// save writes cache to disk
+// save writes cache to disk (acquires lock)
 func (fc *FileCache) save() error {
-	fc.mu.RLock()
-	defer fc.mu.RUnlock()
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return fc.saveUnsafe()
+}
 
+// saveUnsafe writes cache to disk without locking (must be called with lock held)
+func (fc *FileCache) saveUnsafe() error {
 	fc.data.LastUpdated = time.Now()
 
-	data, err := json.MarshalIndent(fc.data, "", "  ")
+	data, err := json.Marshal(fc.data)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
 	}
@@ -157,7 +159,7 @@ func (fc *FileCache) save() error {
 	tempFile := cacheFile + ".tmp"
 
 	// Write to temp file first
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write cache: %w", err)
 	}
 
@@ -170,15 +172,20 @@ func (fc *FileCache) save() error {
 	return nil
 }
 
-// CalculateFileHash calculates SHA256 hash of a file
+// CalculateFileHash calculates SHA256 hash of a file using streaming for better memory efficiency
 func CalculateFileHash(filePath string) (string, error) {
-	content, err := os.ReadFile(filePath)
+	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
 	}
+	defer func() { _ = file.Close() }()
 
-	hash := sha256.Sum256(content)
-	return hex.EncodeToString(hash[:]), nil
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // IsFileChanged checks if a file has changed since last analysis
@@ -189,10 +196,16 @@ func (fc *FileCache) IsFileChanged(filePath string) (bool, error) {
 	}
 
 	fc.mu.RLock()
-	record, exists := fc.data.Files[filePath]
+	var record *FileRecord
+	for _, r := range fc.data.Files {
+		if r.Path == filePath {
+			record = r
+			break
+		}
+	}
 	fc.mu.RUnlock()
 
-	if !exists {
+	if record == nil {
 		fc.mu.Lock()
 		fc.data.Stats.CacheMisses++
 		fc.mu.Unlock()
@@ -223,9 +236,14 @@ func (fc *FileCache) SaveFileRecord(filePath string, issues []interface{}) error
 	defer fc.mu.Unlock()
 
 	// Preserve ignored issues from previous record
-	oldIgnored := []string{}
-	if oldRecord, exists := fc.data.Files[filePath]; exists {
-		oldIgnored = oldRecord.Ignored
+	var oldIgnored []string
+	for i, existingRecord := range fc.data.Files {
+		if existingRecord.Path == filePath {
+			oldIgnored = existingRecord.Ignored
+			// Remove old record
+			fc.data.Files = append(fc.data.Files[:i], fc.data.Files[i+1:]...)
+			break
+		}
 	}
 
 	record := &FileRecord{
@@ -236,10 +254,10 @@ func (fc *FileCache) SaveFileRecord(filePath string, issues []interface{}) error
 		Ignored:      oldIgnored,
 	}
 
-	fc.data.Files[filePath] = record
+	fc.data.Files = append(fc.data.Files, record)
 	fc.updateStats()
 
-	return fc.save()
+	return fc.saveUnsafe()
 }
 
 // GetFileRecord retrieves a file record
@@ -247,14 +265,15 @@ func (fc *FileCache) GetFileRecord(filePath string) (*FileRecord, error) {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
 
-	record, exists := fc.data.Files[filePath]
-	if !exists {
-		return nil, fmt.Errorf("file not found in cache: %s", filePath)
+	for _, record := range fc.data.Files {
+		if record.Path == filePath {
+			// Return a copy to prevent concurrent modification
+			recordCopy := *record
+			return &recordCopy, nil
+		}
 	}
 
-	// Return a copy to prevent concurrent modification
-	recordCopy := *record
-	return &recordCopy, nil
+	return nil, fmt.Errorf("file not found in cache: %s", filePath)
 }
 
 // IgnoreIssue marks an issue as ignored
@@ -262,8 +281,14 @@ func (fc *FileCache) IgnoreIssue(filePath, issueID, ignoreType string) error {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
-	record, exists := fc.data.Files[filePath]
-	if !exists {
+	var record *FileRecord
+	for _, r := range fc.data.Files {
+		if r.Path == filePath {
+			record = r
+			break
+		}
+	}
+	if record == nil {
 		return fmt.Errorf("file not found: %s", filePath)
 	}
 
@@ -280,16 +305,18 @@ func (fc *FileCache) IgnoreIssue(filePath, issueID, ignoreType string) error {
 	}
 
 	// Update issue with ignore info
+	now := time.Now()
 	for i := range record.Issues {
 		if record.Issues[i].ID == issueID {
-			record.Issues[i].IgnoredAt = time.Now()
-			record.Issues[i].IgnoreType = ignoreType
+			record.Issues[i].IgnoredAt = now
+			// Convert string to IssueType - for now use a default
+			record.Issues[i].IgnoreType = models.IssueAPIMisuse // Default ignore type
 			break
 		}
 	}
 
 	fc.updateStats()
-	return fc.save()
+	return fc.saveUnsafe()
 }
 
 // IsIssueIgnored checks if an issue is ignored
@@ -297,8 +324,14 @@ func (fc *FileCache) IsIssueIgnored(filePath, issueID string) (bool, error) {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
 
-	record, exists := fc.data.Files[filePath]
-	if !exists {
+	var record *FileRecord
+	for _, r := range fc.data.Files {
+		if r.Path == filePath {
+			record = r
+			break
+		}
+	}
+	if record == nil {
 		return false, nil
 	}
 
@@ -315,21 +348,28 @@ func (fc *FileCache) MarkIssueFixed(filePath, issueID string) error {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
-	record, exists := fc.data.Files[filePath]
-	if !exists {
+	var record *FileRecord
+	for _, r := range fc.data.Files {
+		if r.Path == filePath {
+			record = r
+			break
+		}
+	}
+	if record == nil {
 		return fmt.Errorf("file not found: %s", filePath)
 	}
 
 	// Update issue with fix info
+	now := time.Now()
 	for i := range record.Issues {
 		if record.Issues[i].ID == issueID {
-			record.Issues[i].FixedAt = time.Now()
+			record.Issues[i].FixedAt = now
 			break
 		}
 	}
 
 	fc.updateStats()
-	return fc.save()
+	return fc.saveUnsafe()
 }
 
 // GetStats returns cache statistics
@@ -379,13 +419,13 @@ func (fc *FileCache) ClearCache() error {
 
 	fc.data = &CacheData{
 		Version:      CacheVersion,
-		Files:        make(map[string]*FileRecord),
-		IgnoredRules: make(map[string][]string),
+		Files:        make([]*FileRecord, 0, 100),
+		IgnoredRules: make([]IgnoredRule, 0, 10),
 		Stats:        &CacheStats{},
 		LastUpdated:  time.Now(),
 	}
 
-	return fc.save()
+	return fc.saveUnsafe()
 }
 
 // AddIgnoredRule adds a rule type to ignore for a file pattern
@@ -393,19 +433,28 @@ func (fc *FileCache) AddIgnoredRule(filePattern, ruleType string) error {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
-	if fc.data.IgnoredRules[filePattern] == nil {
-		fc.data.IgnoredRules[filePattern] = []string{}
-	}
-
-	// Check if already ignored
-	for _, rt := range fc.data.IgnoredRules[filePattern] {
-		if rt == ruleType {
-			return nil
+	// Find existing rule for this pattern
+	for i, rule := range fc.data.IgnoredRules {
+		if rule.FilePattern == filePattern {
+			// Check if rule type already exists
+			for _, rt := range rule.RuleTypes {
+				if rt == ruleType {
+					return nil // Already exists
+				}
+			}
+			// Add a new rule type
+			fc.data.IgnoredRules[i].RuleTypes = append(fc.data.IgnoredRules[i].RuleTypes, ruleType)
+			return fc.saveUnsafe()
 		}
 	}
 
-	fc.data.IgnoredRules[filePattern] = append(fc.data.IgnoredRules[filePattern], ruleType)
-	return fc.save()
+	// Create new ignored rule
+	newRule := IgnoredRule{
+		FilePattern: filePattern,
+		RuleTypes:   []string{ruleType},
+	}
+	fc.data.IgnoredRules = append(fc.data.IgnoredRules, newRule)
+	return fc.saveUnsafe()
 }
 
 // ShouldIgnoreRule checks if a rule should be ignored for a file
@@ -413,9 +462,9 @@ func (fc *FileCache) ShouldIgnoreRule(filePath, ruleType string) bool {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
 
-	for pattern, rules := range fc.data.IgnoredRules {
-		if matchPattern(filePath, pattern) {
-			for _, rt := range rules {
+	for _, rule := range fc.data.IgnoredRules {
+		if matchPattern(filePath, rule.FilePattern) {
+			for _, rt := range rule.RuleTypes {
 				if rt == ruleType || rt == "*" {
 					return true
 				}
@@ -454,19 +503,24 @@ func matchPattern(path, pattern string) bool {
 }
 
 // Helper function to convert generic issues to cache Issue
-func convertIssues(analyzerIssues []interface{}) []*Issue {
-	issues := make([]*Issue, 0, len(analyzerIssues))
+func convertIssues(analyzerIssues []interface{}) []*models.Issue {
+	issues := make([]*models.Issue, 0, len(analyzerIssues))
 	for i := range analyzerIssues {
-		// Use reflection to extract fields from the interface
-		// This is a temporary workaround for the import cycle
+		// Check if it's already an Issue
+		if issue, ok := analyzerIssues[i].(*models.Issue); ok {
+			issues = append(issues, issue)
+			continue
+		}
+
+		// Otherwise create a generic issue
 		issues = append(
-			issues, &Issue{
+			issues, &models.Issue{
 				ID:         generateIssueID(analyzerIssues[i]),
-				Type:       "generic",
+				Type:       models.IssueAPIMisuse, // Default generic type
 				Line:       0,
 				Column:     0,
 				Message:    "cached issue",
-				Severity:   "medium",
+				Severity:   models.SeverityLevelMedium,
 				Suggestion: "",
 				CanBeFixed: false,
 			},
@@ -482,17 +536,26 @@ func (fc *FileCache) SaveRawRecord(key string, entry Entry) error {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
+	// Remove existing record if it exists
+	for i, existingRecord := range fc.data.Files {
+		if existingRecord.Path == key {
+			fc.data.Files = append(fc.data.Files[:i], fc.data.Files[i+1:]...)
+			break
+		}
+	}
+
 	// Create a FileRecord from the Entry
-	fc.data.Files[key] = &FileRecord{
+	newRecord := &FileRecord{
 		Path:         key,
 		Hash:         entry.Hash,
 		LastAnalyzed: time.Now(),
 		Issues:       entry.Issues,
 		Ignored:      []string{}, // Preserve any existing ignored items if needed
 	}
-	
+	fc.data.Files = append(fc.data.Files, newRecord)
+
 	fc.updateStats()
-	return fc.save()
+	return fc.saveUnsafe()
 }
 
 // Generate unique ID for an issue
@@ -500,7 +563,7 @@ func generateIssueID(issue interface{}) string {
 	// Simple hash based on pointer address for now
 	data := fmt.Sprintf("%p", issue)
 	hash := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter ID
+	return hex.EncodeToString(hash[:8]) // Use the first 8 bytes for shorter ID
 }
 
 // GetCacheDir returns the cache directory path

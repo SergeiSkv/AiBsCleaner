@@ -3,402 +3,287 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
-	"strings"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
-// ConcurrencyPatternsAnalyzer detects inefficient concurrency patterns
-type ConcurrencyPatternsAnalyzer struct {
-	waitGroups map[string]*WaitGroupInfo
-	channels   map[string]*ChannelUsage
-}
+const backgroundFunc = "Background"
 
-type WaitGroupInfo struct {
-	Added  []token.Position
-	Done   []token.Position
-	Waited []token.Position
-}
-
-type ChannelUsage struct {
-	Created   token.Position
-	Buffered  bool
-	Size      int
-	SendCount int
-	RecvCount int
-}
+// ConcurrencyPatternsAnalyzer focuses on high-signal concurrency mistakes.
+type ConcurrencyPatternsAnalyzer struct{}
 
 func NewConcurrencyPatternsAnalyzer() Analyzer {
-	return &ConcurrencyPatternsAnalyzer{
-		waitGroups: make(map[string]*WaitGroupInfo),
-		channels:   make(map[string]*ChannelUsage),
-	}
+	return &ConcurrencyPatternsAnalyzer{}
 }
 
 func (cpa *ConcurrencyPatternsAnalyzer) Name() string {
 	return "ConcurrencyPatternsAnalyzer"
 }
 
-func (cpa *ConcurrencyPatternsAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (cpa *ConcurrencyPatternsAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Reset state
-	cpa.waitGroups = make(map[string]*WaitGroupInfo)
-	cpa.channels = make(map[string]*ChannelUsage)
-
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.GoStmt:
-				issues = append(issues, cpa.analyzeGoStmt(node, filename, fset)...)
-			case *ast.CallExpr:
-				issues = append(issues, cpa.analyzeCallExpr(node, n, filename, fset)...)
-			case *ast.SelectStmt:
-				issues = append(issues, cpa.analyzeSelectStmt(node, filename, fset)...)
-			case *ast.AssignStmt:
-				issues = append(issues, cpa.analyzeAssignStmt(node, n, filename, fset)...)
-			}
-			return true
-		},
-	)
-
-	// Check for deadlock patterns
-	issues = append(issues, cpa.checkDeadlockPatterns(filename, fset)...)
-
-	return issues
+	ctx := newConcurrencyContext(fset, filename)
+	ast.Walk(&concurrencyVisitor{ctx: ctx}, file)
+	return ctx.issues
 }
 
-func (cpa *ConcurrencyPatternsAnalyzer) analyzeCallExpr(node *ast.CallExpr, n ast.Node, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
+type concurrencyVisitor struct {
+	ctx *concurrencyContext
+}
 
-	sel, ok := node.Fun.(*ast.SelectorExpr)
+func (v *concurrencyVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		v.ctx.popNode()
+		return nil
+	}
+
+	v.ctx.pushNode(node)
+
+	switch n := node.(type) {
+	case *ast.RangeStmt:
+		v.ctx.pushLoop(n)
+	case *ast.ForStmt:
+		v.ctx.pushLoop(n)
+	case *ast.ValueSpec:
+		v.ctx.recordValueSpec(n)
+	case *ast.FuncDecl:
+		v.ctx.recordFuncParams(n)
+	case *ast.GoStmt:
+		v.ctx.handleGoStmt(n)
+	case *ast.CallExpr:
+		v.ctx.handleCallExpr(n)
+	}
+
+	return v
+}
+
+type concurrencyContext struct {
+	fset     *token.FileSet
+	filename string
+	issues   []*models.Issue
+	types    *typeTable
+
+	nodeStack []ast.Node
+	loopStack []loopFrame
+}
+
+type loopFrame struct {
+	node ast.Node
+	vars map[token.Pos]struct{}
+}
+
+func newConcurrencyContext(fset *token.FileSet, filename string) *concurrencyContext {
+	return &concurrencyContext{
+		fset:      fset,
+		filename:  filename,
+		issues:    make([]*models.Issue, 0, 16),
+		types:     newTypeTable(),
+		nodeStack: make([]ast.Node, 0, 32),
+		loopStack: make([]loopFrame, 0, 8),
+	}
+}
+
+func (ctx *concurrencyContext) pushNode(node ast.Node) {
+	ctx.nodeStack = append(ctx.nodeStack, node)
+}
+
+func (ctx *concurrencyContext) popNode() {
+	if len(ctx.nodeStack) == 0 {
+		return
+	}
+
+	node := ctx.nodeStack[len(ctx.nodeStack)-1]
+	ctx.nodeStack = ctx.nodeStack[:len(ctx.nodeStack)-1]
+
+	switch node.(type) {
+	case *ast.RangeStmt, *ast.ForStmt:
+		ctx.popLoop()
+	}
+}
+
+func (ctx *concurrencyContext) pushLoop(node ast.Node) {
+	frame := loopFrame{node: node}
+
+	if rng, ok := node.(*ast.RangeStmt); ok {
+		vars := make(map[token.Pos]struct{}, 2)
+		if ident, ok := rng.Key.(*ast.Ident); ok && ident.Obj != nil {
+			vars[ident.Obj.Pos()] = struct{}{}
+		}
+		if ident, ok := rng.Value.(*ast.Ident); ok && ident.Obj != nil {
+			vars[ident.Obj.Pos()] = struct{}{}
+		}
+		frame.vars = vars
+	}
+
+	ctx.loopStack = append(ctx.loopStack, frame)
+}
+
+func (ctx *concurrencyContext) popLoop() {
+	if len(ctx.loopStack) == 0 {
+		return
+	}
+	ctx.loopStack = ctx.loopStack[:len(ctx.loopStack)-1]
+}
+
+func (ctx *concurrencyContext) insideLoop() bool {
+	return len(ctx.loopStack) > 0
+}
+
+func (ctx *concurrencyContext) currentLoopVars() map[token.Pos]struct{} {
+	if len(ctx.loopStack) == 0 {
+		return nil
+	}
+	return ctx.loopStack[len(ctx.loopStack)-1].vars
+}
+
+func (ctx *concurrencyContext) recordValueSpec(spec *ast.ValueSpec) {
+	typ := canonicalType(spec.Type)
+	if typ == "" {
+		return
+	}
+
+	for _, name := range spec.Names {
+		if name == nil || name.Obj == nil {
+			continue
+		}
+		ctx.types.record(name.Obj.Pos(), typ)
+	}
+}
+
+func (ctx *concurrencyContext) recordFuncParams(fn *ast.FuncDecl) {
+	if fn.Type == nil || fn.Type.Params == nil {
+		return
+	}
+
+	for _, field := range fn.Type.Params.List {
+		typ := canonicalType(field.Type)
+		if typ == "" {
+			continue
+		}
+		for _, name := range field.Names {
+			if name == nil || name.Obj == nil {
+				continue
+			}
+			ctx.types.record(name.Obj.Pos(), typ)
+		}
+	}
+}
+
+func (ctx *concurrencyContext) handleGoStmt(stmt *ast.GoStmt) {
+	if stmt.Call == nil {
+		return
+	}
+
+	fn, ok := stmt.Call.Fun.(*ast.FuncLit)
+	if !ok || fn.Body == nil {
+		return
+	}
+
+	if ctx.loopCapturesRangeVar(fn.Body) {
+		ctx.addIssue(stmt.Pos(), models.IssueGoroutineCapturesLoop, models.SeverityLevelHigh,
+			"goroutine captures loop variable", "Copy the loop variable inside the goroutine or pass it as an argument")
+	}
+
+	if pos, ok := findContextBackground(fn.Body); ok {
+		ctx.addIssue(pos, models.IssueContextBackgroundInGoroutine, models.SeverityLevelMedium,
+			"goroutine starts with context.Background()", "Propagate the parent context instead of creating a background context")
+	}
+}
+
+func (ctx *concurrencyContext) handleCallExpr(call *ast.CallExpr) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return issues
+		return
 	}
 
 	ident, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return issues
+	if !ok || ident.Obj == nil {
+		return
 	}
 
-	// Check WaitGroup patterns
-	issues = append(issues, cpa.checkWaitGroupPatterns(node, n, sel, ident, filename, fset)...)
-
-	// Check Mutex patterns
-	issues = append(issues, cpa.checkMutexPatterns(n, sel, ident, filename, fset)...)
-
-	// Check Channel patterns
-	issues = append(issues, cpa.checkChannelPatterns(node, sel, ident, filename, fset)...)
-
-	return issues
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) checkWaitGroupPatterns(
-	node *ast.CallExpr, n ast.Node, sel *ast.SelectorExpr, ident *ast.Ident,
-	filename string, fset *token.FileSet,
-) []*Issue {
-	var issues []*Issue
-
-	if !strings.Contains(ident.Name, "WaitGroup") && !strings.HasSuffix(ident.Name, "wg") {
-		return issues
-	}
-
-	switch sel.Sel.Name {
-	case "Add":
-		if cpa.isAddInLoop(n) {
-			pos := fset.Position(node.Pos())
-			issues = append(
-				issues, &Issue{
-					File:       filename,
-					Line:       pos.Line,
-					Column:     pos.Column,
-					Position:   pos,
-					Type:       IssueWaitGroupAddInLoop,
-					Severity:   SeverityLevelMedium,
-					Message:    "WaitGroup.Add() called in loop - consider Add(n) before loop",
-					Suggestion: "Call wg.Add(count) once before the loop",
-				},
-			)
-		}
-	case "Wait":
-		if cpa.isWaitBeforeGoroutines(n) {
-			pos := fset.Position(node.Pos())
-			issues = append(
-				issues, &Issue{
-					File:       filename,
-					Line:       pos.Line,
-					Column:     pos.Column,
-					Position:   pos,
-					Type:       IssueWaitGroupWaitBeforeStart,
-					Severity:   SeverityLevelHigh,
-					Message:    "WaitGroup.Wait() might be called before all goroutines start",
-					Suggestion: "Ensure all goroutines are started before calling Wait()",
-				},
-			)
+	typ := ctx.types.lookup(ident.Obj.Pos())
+	if sel.Sel.Name == methodAdd {
+		if isWaitGroupType(typ) && ctx.insideLoop() {
+			ctx.addIssue(call.Pos(), models.IssueWaitGroupAddInLoop, models.SeverityLevelMedium,
+				"WaitGroup.Add inside loop", "Call Add once before the loop and use Done inside goroutines")
 		}
 	}
-
-	return issues
 }
 
-func (cpa *ConcurrencyPatternsAnalyzer) checkMutexPatterns(
-	n ast.Node, sel *ast.SelectorExpr, ident *ast.Ident, filename string, fset *token.FileSet,
-) []*Issue {
-	var issues []*Issue
+func (ctx *concurrencyContext) loopCapturesRangeVar(body *ast.BlockStmt) bool {
+	vars := ctx.currentLoopVars()
+	if len(vars) == 0 {
+		return false
+	}
 
-	if strings.Contains(sel.Sel.Name, "Lock") && !strings.Contains(ident.Name, "RW") {
-		if cpa.hasOnlyReads(n) {
-			pos := fset.Position(sel.Pos())
-			issues = append(
-				issues, &Issue{
-					File:       filename,
-					Line:       pos.Line,
-					Column:     pos.Column,
-					Position:   pos,
-					Type:       IssueMutexForReadOnly,
-					Severity:   SeverityLevelMedium,
-					Message:    "Using sync.Mutex for read-only operations",
-					Suggestion: "Use sync.RWMutex with RLock() for better concurrency",
-				},
-			)
+	captured := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if !ok || ident.Obj == nil {
+			return true
 		}
-	}
+		if _, exists := vars[ident.Obj.Pos()]; exists {
+			captured = true
+			return false
+		}
+		return true
+	})
 
-	return issues
+	return captured
 }
 
-func (cpa *ConcurrencyPatternsAnalyzer) checkChannelPatterns(
-	node *ast.CallExpr, sel *ast.SelectorExpr, ident *ast.Ident,
-	filename string, fset *token.FileSet,
-) []*Issue {
-	var issues []*Issue
-
-	if sel.Sel.Name != "Send" && sel.Sel.Name != "Recv" {
-		return issues
-	}
-
-	usage, exists := cpa.channels[ident.Name]
-	if !exists {
-		return issues
-	}
-
-	if !usage.Buffered && usage.SendCount > 10 {
-		pos := fset.Position(node.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueUnbufferedChannel,
-				Severity:   SeverityLevelMedium,
-				Message:    "Unbuffered channel with high traffic causes goroutine blocking",
-				Suggestion: "Consider using buffered channel for better throughput",
-			},
-		)
-	}
-
-	return issues
+func (ctx *concurrencyContext) addIssue(pos token.Pos, issueType models.IssueType, severity models.SeverityLevel, message, suggestion string) {
+	position := ctx.fset.Position(pos)
+	ctx.issues = append(ctx.issues, &models.Issue{
+		File:       ctx.filename,
+		Line:       position.Line,
+		Column:     position.Column,
+		Position:   position,
+		Type:       issueType,
+		Severity:   severity,
+		Message:    message,
+		Suggestion: suggestion,
+	})
 }
 
-func (cpa *ConcurrencyPatternsAnalyzer) analyzeSelectStmt(node *ast.SelectStmt, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
+func findContextBackground(body *ast.BlockStmt) (token.Pos, bool) {
+	var hit token.Pos
 
-	// Check for select with single case
-	if len(node.Body.List) == 1 {
-		pos := fset.Position(node.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueSelectWithSingleCase,
-				Severity:   SeverityLevelLow,
-				Message:    "Select with single case is inefficient",
-				Suggestion: "Use direct channel operation instead of select",
-			},
-		)
-	}
-
-	// Check for busy wait pattern
-	if cpa.isBusyWait(node) {
-		pos := fset.Position(node.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueBusyWait,
-				Severity:   SeverityLevelHigh,
-				Message:    "Busy wait pattern wastes CPU cycles",
-				Suggestion: "Add time.Sleep() or use blocking channel operation",
-			},
-		)
-	}
-
-	return issues
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) analyzeAssignStmt(node *ast.AssignStmt, n ast.Node, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	for _, rhs := range node.Rhs {
-		call, ok := rhs.(*ast.CallExpr)
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
 		if !ok {
-			continue
+			return true
 		}
 
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
-			continue
+			return true
 		}
 
 		ident, ok := sel.X.(*ast.Ident)
 		if !ok {
-			continue
+			return true
 		}
 
 		if ident.Name == pkgContext && sel.Sel.Name == backgroundFunc {
-			if cpa.isInGoroutine(n) {
-				pos := fset.Position(node.Pos())
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueContextBackgroundInGoroutine,
-						Severity:   SeverityLevelMedium,
-						Message:    "Using context.Background() in goroutine prevents cancellation",
-						Suggestion: "Pass context from parent or use context.WithCancel",
-					},
-				)
-			}
-		}
-	}
-
-	return issues
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) hasRecover(call *ast.CallExpr) bool {
-	fn, ok := call.Fun.(*ast.FuncLit)
-	if !ok {
-		return false
-	}
-
-	hasRecover := false
-	ast.Inspect(
-		fn.Body, func(n ast.Node) bool {
-			defer_, ok := n.(*ast.DeferStmt)
-			if !ok || defer_.Call == nil {
-				return true
-			}
-
-			ident, ok := defer_.Call.Fun.(*ast.Ident)
-			if !ok || ident.Name != "recover" {
-				return true
-			}
-
-			hasRecover = true
+			hit = call.Pos()
 			return false
-		},
-	)
-	return hasRecover
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) capturesLoopVar(call *ast.CallExpr) bool {
-	// Simplified check - would need proper scope analysis
-	return false
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) isAddInLoop(node ast.Node) bool {
-	// Simplified check
-	return false
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) isWaitBeforeGoroutines(node ast.Node) bool {
-	// Simplified check
-	return false
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) hasOnlyReads(node ast.Node) bool {
-	// Simplified check
-	return false
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) isInGoroutine(node ast.Node) bool {
-	// Simplified check
-	return false
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) isBusyWait(sel *ast.SelectStmt) bool {
-	// Check if select has only default case
-	for _, stmt := range sel.Body.List {
-		if comm, ok := stmt.(*ast.CommClause); ok {
-			if comm.Comm == nil { // default case
-				// Check if default case is empty or only continues
-				if len(comm.Body) == 0 {
-					return true
-				}
-			}
 		}
+
+		return true
+	})
+
+	if hit == token.NoPos {
+		return token.NoPos, false
 	}
-	return false
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) checkDeadlockPatterns(filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-	// Check for circular channel dependencies, mutex ordering issues, etc.
-	return issues
-}
-
-func (cpa *ConcurrencyPatternsAnalyzer) analyzeGoStmt(node *ast.GoStmt, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	// Check for goroutine without recover
-	if !cpa.hasRecover(node.Call) {
-		pos := fset.Position(node.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueGoroutineNoRecover,
-				Severity:   SeverityLevelMedium,
-				Message:    "Goroutine without recover() can crash the program",
-				Suggestion: "Add defer recover() at the beginning of goroutine",
-			},
-		)
-	}
-
-	// Check for goroutine with closure capturing loop variable
-	if cpa.capturesLoopVar(node.Call) {
-		pos := fset.Position(node.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueGoroutineCapturesLoop,
-				Severity:   SeverityLevelHigh,
-				Message:    "Goroutine captures loop variable by reference",
-				Suggestion: "Pass loop variable as parameter or create local copy",
-			},
-		)
-	}
-
-	return issues
+	return hit, true
 }

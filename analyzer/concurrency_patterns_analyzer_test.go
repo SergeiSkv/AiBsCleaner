@@ -5,33 +5,108 @@ import (
 	"go/token"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/SergeiSkv/AiBsCleaner/models"
 	"github.com/stretchr/testify/require"
 )
 
-func TestConcurrencyPatternsAnalyzer(t *testing.T) {
-	// Simple test to check if analyzer works
+func TestConcurrency_WaitGroupAddInLoop(t *testing.T) {
 	code := `package main
 import "sync"
-
-func test() {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		wg.Done() // Not deferred - potential issue
-	}()
-	wg.Wait()
+func run(wg *sync.WaitGroup, items []int) {
+    for range items {
+        wg.Add(1)
+    }
 }`
 
+	issues := runConcurrencyAnalyzer(t, code)
+	require.True(t, hasIssue(issues, models.IssueWaitGroupAddInLoop))
+}
+
+func TestConcurrency_WaitGroupAddOutsideLoopClean(t *testing.T) {
+	code := `package main
+import "sync"
+func run() {
+    var wg sync.WaitGroup
+    wg.Add(1)
+    go func() { defer wg.Done() }()
+    wg.Wait()
+}`
+
+	issues := runConcurrencyAnalyzer(t, code)
+	require.False(t, hasIssue(issues, models.IssueWaitGroupAddInLoop))
+}
+
+func TestConcurrency_GoroutineCapturesRangeVar(t *testing.T) {
+	code := `package main
+import "fmt"
+func run(items []int) {
+    for _, item := range items {
+        go func() {
+            fmt.Println(item)
+        }()
+    }
+}`
+
+	issues := runConcurrencyAnalyzer(t, code)
+	require.True(t, hasIssue(issues, models.IssueGoroutineCapturesLoop))
+}
+
+func TestConcurrency_GoroutineCopiesRangeVarSafe(t *testing.T) {
+	code := `package main
+import "fmt"
+func run(items []int) {
+    for _, item := range items {
+        go func(it int) {
+            fmt.Println(it)
+        }(item)
+    }
+}`
+
+	issues := runConcurrencyAnalyzer(t, code)
+	require.False(t, hasIssue(issues, models.IssueGoroutineCapturesLoop))
+}
+
+func TestConcurrency_ContextBackgroundInGoroutine(t *testing.T) {
+	code := `package main
+import "context"
+func run() {
+    go func() {
+        ctx := context.Background()
+        _ = ctx
+    }()
+}`
+
+	issues := runConcurrencyAnalyzer(t, code)
+	require.True(t, hasIssue(issues, models.IssueContextBackgroundInGoroutine))
+}
+
+func TestConcurrency_ContextBackgroundOutsideGoroutineAllowed(t *testing.T) {
+	code := `package main
+import "context"
+func run() {
+    ctx := context.Background()
+    _ = ctx
+}`
+
+	issues := runConcurrencyAnalyzer(t, code)
+	require.False(t, hasIssue(issues, models.IssueContextBackgroundInGoroutine))
+}
+
+func runConcurrencyAnalyzer(t *testing.T, code string) []*models.Issue {
+	t.Helper()
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, "test.go", code, parser.ParseComments)
 	require.NoError(t, err)
 
 	analyzer := NewConcurrencyPatternsAnalyzer()
-	assert.NotNil(t, analyzer)
-	assert.Equal(t, "ConcurrencyPatternsAnalyzer", analyzer.Name())
+	return analyzer.Analyze(node, fset)
+}
 
-	// Just run the analyzer, don't check specific issues since implementation may vary
-	issues := analyzer.Analyze(node, fset)
-	assert.NotNil(t, issues) // Should at least return empty slice, not nil
+func hasIssue(issues []*models.Issue, issueType models.IssueType) bool {
+	for _, issue := range issues {
+		if issue.Type == issueType {
+			return true
+		}
+	}
+	return false
 }

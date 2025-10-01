@@ -1,15 +1,15 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/SergeiSkv/AiBsCleaner/analyzer"
 )
 
 // Config represents the configuration for the analyzer
@@ -27,7 +27,6 @@ type Config struct {
 		Time                AnalyzerConfig `yaml:"time" json:"time"`
 		MemoryLeak          AnalyzerConfig `yaml:"memory_leak" json:"memory_leak"`
 		Database            AnalyzerConfig `yaml:"database" json:"database"`
-		NilPtr              AnalyzerConfig `yaml:"nil_ptr" json:"nil_ptr"`
 		APIMisuse           AnalyzerConfig `yaml:"api_misuse" json:"api_misuse"`
 		AIBullshit          AnalyzerConfig `yaml:"ai_bullshit" json:"ai_bullshit"`
 		Channel             AnalyzerConfig `yaml:"channel" json:"channel"`
@@ -49,6 +48,8 @@ type Config struct {
 		CGO                 AnalyzerConfig `yaml:"cgo" json:"cgo"`
 		String              AnalyzerConfig `yaml:"string" json:"string"`
 		Dependency          AnalyzerConfig `yaml:"dependency" json:"dependency"`
+		StructLayout        AnalyzerConfig `yaml:"struct_layout" json:"struct_layout"`
+		CPUCache            AnalyzerConfig `yaml:"cpu_cache" json:"cpu_cache"`
 	} `yaml:"analyzers" json:"analyzers"`
 
 	// Thresholds for various checks
@@ -97,7 +98,6 @@ func DefaultConfig() *Config {
 	config.Analyzers.Time.Enabled = true
 	config.Analyzers.MemoryLeak.Enabled = true
 	config.Analyzers.Database.Enabled = true
-	config.Analyzers.NilPtr.Enabled = true
 	config.Analyzers.APIMisuse.Enabled = true
 	config.Analyzers.AIBullshit.Enabled = true
 	config.Analyzers.Channel.Enabled = true
@@ -116,9 +116,11 @@ func DefaultConfig() *Config {
 	config.Analyzers.Serialization.Enabled = true
 	config.Analyzers.IOBuffer.Enabled = true
 	config.Analyzers.HTTPReuse.Enabled = true
-	config.Analyzers.CGO.Enabled = false // Disabled by default
+	config.Analyzers.CGO.Enabled = true
 	config.Analyzers.String.Enabled = true
 	config.Analyzers.Dependency.Enabled = true
+	config.Analyzers.StructLayout.Enabled = true
+	config.Analyzers.CPUCache.Enabled = true
 
 	// Set default thresholds
 	config.Thresholds.MaxLoopDepth = 3
@@ -147,7 +149,7 @@ func DefaultConfig() *Config {
 	return config
 }
 
-// findConfigPath searches for config file in common locations
+// findConfigPath searches for a config file in common locations
 func findConfigPath() string {
 	locations := []string{
 		".aibscleaner.yaml",
@@ -182,77 +184,130 @@ func findConfigPath() string {
 
 // LoadConfig loads configuration from a file or returns default
 func LoadConfig(path string) (*Config, error) {
-	// If no path specified, try to find config in common locations
-	if path == "" {
-		path = findConfigPath()
-	}
-
-	// If still no config found, return default
-	if path == "" {
+	resolvedPath := resolveConfigPath(path)
+	if resolvedPath == "" {
 		return DefaultConfig(), nil
 	}
 
-	// Read a config file
-	data, err := os.ReadFile(path)
+	file, err := os.Open(resolvedPath)
 	if err != nil {
-		// If a config file doesn't exist, return default
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
+	defer func() { _ = file.Close() }()
 
-	// Parse config based on extension
+	config, err := decodeConfigFile(file, resolvedPath)
+	if err != nil {
+		return nil, err
+	}
+
+	mergeIgnorePatterns(config, ".abcignore")
+	return config, nil
+}
+
+func resolveConfigPath(path string) string {
+	if path != "" {
+		return path
+	}
+	return findConfigPath()
+}
+
+func decodeConfigFile(r io.ReadSeeker, path string) (*Config, error) {
 	config := &Config{}
-	ext := filepath.Ext(path)
+	ext := strings.ToLower(filepath.Ext(path))
 
 	switch ext {
 	case ".json":
-		if err := json.Unmarshal(data, config); err != nil {
+		if err := json.NewDecoder(r).Decode(config); err != nil {
 			return nil, fmt.Errorf("failed to parse JSON config: %w", err)
 		}
 	case ".yaml", ".yml":
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read YAML config: %w", err)
+		}
 		if err := yaml.Unmarshal(data, config); err != nil {
 			return nil, fmt.Errorf("failed to parse YAML config: %w", err)
 		}
 	default:
-		// Try YAML first, then JSON
-		if err := yaml.Unmarshal(data, config); err != nil {
-			if err := json.Unmarshal(data, config); err != nil {
-				return nil, fmt.Errorf("failed to parse config (tried YAML and JSON): %w", err)
-			}
+		if err := tryJSONThenYAML(r, config); err != nil {
+			return nil, err
 		}
-	}
-
-	// Load .abcignore if exists
-	if ignorePatterns, err := loadIgnoreFile(".abcignore"); err == nil {
-		config.Paths.Exclude = append(config.Paths.Exclude, ignorePatterns...)
 	}
 
 	return config, nil
 }
 
+func tryJSONThenYAML(r io.ReadSeeker, config *Config) error {
+	if err := json.NewDecoder(r).Decode(config); err == nil {
+		return nil
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to reset file position: %w", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("failed to read config for YAML parsing: %w", err)
+	}
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return fmt.Errorf("failed to parse config (tried JSON and YAML): %w", err)
+	}
+	return nil
+}
+
+func mergeIgnorePatterns(cfg *Config, ignorePath string) {
+	patterns, err := loadIgnoreFile(ignorePath)
+	if err != nil {
+		return
+	}
+	cfg.Paths.Exclude = append(cfg.Paths.Exclude, patterns...)
+}
+
 // loadIgnoreFile loads patterns from an ignored file like .gitignore
 func loadIgnoreFile(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	lines, err := readLines(file)
 	if err != nil {
 		return nil, err
 	}
 
-	lines := strings.Split(string(data), "\n")
+	patterns := parseIgnoreLines(lines)
+	return patterns, nil
+}
+
+func readLines(r io.Reader) ([]string, error) {
+	const maxLineSize = 1024 * 1024
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, maxLineSize)
+	scanner.Buffer(buf, maxLineSize)
+
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
+func parseIgnoreLines(lines []string) []string {
 	patterns := make([]string, 0, len(lines))
 
 	for _, line := range lines {
-		// Trim whitespace
 		line = strings.TrimSpace(line)
-
-		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		// Convert glob patterns to simple excludes
-		// Remove trailing slashes and wildcards for simplicity
 		line = strings.TrimSuffix(line, "/")
 		line = strings.TrimSuffix(line, "*")
 		line = strings.TrimPrefix(line, "**/")
@@ -260,56 +315,7 @@ func loadIgnoreFile(path string) ([]string, error) {
 		patterns = append(patterns, line)
 	}
 
-	return patterns, nil
-}
-
-// getAnalyzerEnabled returns if a specific analyzer is enabled
-// Currently unused but kept for future API
-func (c *Config) getAnalyzerEnabled(analyzerType analyzer.AnalyzerType) bool {
-	analyzerConfigs := map[analyzer.AnalyzerType]*AnalyzerConfig{
-		analyzer.AnalyzerLoop:                &c.Analyzers.Loop,
-		analyzer.AnalyzerDeferOptimization:   &c.Analyzers.DeferOptimization,
-		analyzer.AnalyzerSlice:               &c.Analyzers.Slice,
-		analyzer.AnalyzerMap:                 &c.Analyzers.Map,
-		analyzer.AnalyzerReflection:          &c.Analyzers.Reflection,
-		analyzer.AnalyzerGoroutine:           &c.Analyzers.Goroutine,
-		analyzer.AnalyzerInterface:           &c.Analyzers.Interface,
-		analyzer.AnalyzerRegex:               &c.Analyzers.Regex,
-		analyzer.AnalyzerTime:                &c.Analyzers.Time,
-		analyzer.AnalyzerMemoryLeak:          &c.Analyzers.MemoryLeak,
-		analyzer.AnalyzerDatabase:            &c.Analyzers.Database,
-		analyzer.AnalyzerNilPtr:              &c.Analyzers.NilPtr,
-		analyzer.AnalyzerAPIMisuse:           &c.Analyzers.APIMisuse,
-		analyzer.AnalyzerAIBullshit:          &c.Analyzers.AIBullshit,
-		analyzer.AnalyzerChannel:             &c.Analyzers.Channel,
-		analyzer.AnalyzerHTTPClient:          &c.Analyzers.HTTPClient,
-		analyzer.AnalyzerPrivacy:             &c.Analyzers.Privacy,
-		analyzer.AnalyzerContext:             &c.Analyzers.Context,
-		analyzer.AnalyzerRaceCondition:       &c.Analyzers.RaceCondition,
-		analyzer.AnalyzerErrorHandling:       &c.Analyzers.ErrorHandling,
-		analyzer.AnalyzerGCPressure:          &c.Analyzers.GCPressure,
-		analyzer.AnalyzerConcurrencyPatterns: &c.Analyzers.ConcurrencyPatterns,
-		analyzer.AnalyzerCPUOptimization:     &c.Analyzers.CPUOptimization,
-		analyzer.AnalyzerNetworkPatterns:     &c.Analyzers.NetworkPatterns,
-		analyzer.AnalyzerSyncPool:            &c.Analyzers.SyncPool,
-		analyzer.AnalyzerTestCoverage:        &c.Analyzers.TestCoverage,
-		analyzer.AnalyzerCrypto:              &c.Analyzers.Crypto,
-		analyzer.AnalyzerSerialization:       &c.Analyzers.Serialization,
-		analyzer.AnalyzerIOBuffer:            &c.Analyzers.IOBuffer,
-		analyzer.AnalyzerHTTPReuse:           &c.Analyzers.HTTPReuse,
-		analyzer.AnalyzerCGO:                 &c.Analyzers.CGO,
-		analyzer.AnalyzerString:              &c.Analyzers.String,
-		analyzer.AnalyzerDependency:          &c.Analyzers.Dependency,
-	}
-
-	if analyzerType == analyzer.AnalyzerTypeMax {
-		return false // Sentinel value
-	}
-
-	if cfg, ok := analyzerConfigs[analyzerType]; ok {
-		return cfg.Enabled
-	}
-	return true // Enable by default
+	return patterns
 }
 
 // GetAnalyzerConfig returns config for a specific analyzer
@@ -326,7 +332,6 @@ func (c *Config) GetAnalyzerConfig(analyzerName string) AnalyzerConfig {
 		"time":                c.Analyzers.Time,
 		"memoryleak":          c.Analyzers.MemoryLeak,
 		"database":            c.Analyzers.Database,
-		"nilptr":              c.Analyzers.NilPtr,
 		"apimisuse":           c.Analyzers.APIMisuse,
 		"aibullshit":          c.Analyzers.AIBullshit,
 		"channel":             c.Analyzers.Channel,
@@ -348,6 +353,8 @@ func (c *Config) GetAnalyzerConfig(analyzerName string) AnalyzerConfig {
 		"cgo":                 c.Analyzers.CGO,
 		"string":              c.Analyzers.String,
 		"dependency":          c.Analyzers.Dependency,
+		"structlayout":        c.Analyzers.StructLayout,
+		"cpucache":            c.Analyzers.CPUCache,
 	}
 
 	if cfg, ok := analyzerConfigMap[strings.ToLower(analyzerName)]; ok {

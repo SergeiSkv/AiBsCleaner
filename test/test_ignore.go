@@ -20,6 +20,7 @@ func TestIgnoreExample() {
 	}
 
 	// Test defer in loop
+	//nolint:gocritic // intentionally demonstrates defer-in-loop pattern for analyzer tests
 	for i := 0; i < 100; i++ {
 		file, _ := os.Open("test.txt")
 		defer func() {

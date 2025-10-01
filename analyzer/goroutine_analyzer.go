@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type GoroutineAnalyzer struct{}
@@ -15,123 +17,108 @@ func (ga *GoroutineAnalyzer) Name() string {
 	return "GoroutineAnalyzer"
 }
 
-func (ga *GoroutineAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (ga *GoroutineAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.GoStmt:
-				if ga.isGoroutineInLoop(n) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueGoroutineLeak,
-							Severity:   SeverityLevelHigh,
-							Message:    "Creating goroutines in loop without limit can cause resource exhaustion",
-							Suggestion: "Use worker pool pattern or semaphore to limit concurrent goroutines",
-						},
-					)
-				}
+	visitor := &goroutineVisitor{
+		fset:     fset,
+		filename: filename,
+		issues:   make([]*models.Issue, 0, 8),
+	}
 
-				if ga.capturesLoopVariable(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueGoroutineLeak,
-							Severity:   SeverityLevelHigh,
-							Message:    "Goroutine may capture loop variable by reference",
-							Suggestion: "Pass loop variable as parameter or create local copy",
-						},
-					)
-				}
-			case *ast.CallExpr:
-				if ga.isUnbufferedChannel(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueGoroutineLeak,
-							Severity:   SeverityLevelMedium,
-							Message:    "Unbuffered channel may cause goroutine blocking",
-							Suggestion: "Consider using buffered channel: make(chan T, buffer)",
-						},
-					)
-				}
-			}
-			return true
-		},
-	)
-
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-func (ga *GoroutineAnalyzer) isGoroutineInLoop(stmt ast.Node) bool {
-	parent := stmt
-	depth := 0
-	maxDepth := MaxSearchDepth
+type goroutineVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
+}
 
-	for depth < maxDepth {
-		switch parent.(type) {
-		case *ast.ForStmt, *ast.RangeStmt:
-			return true
+func (v *goroutineVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
 		}
-		depth++
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.GoStmt:
+		v.inspectGo(n)
 	}
-
-	return false
+	return v
 }
 
-func (ga *GoroutineAnalyzer) capturesLoopVariable(stmt *ast.GoStmt) bool {
-	inLoop := ga.isGoroutineInLoop(stmt)
-	if !inLoop {
+func (v *goroutineVisitor) inspectGo(stmt *ast.GoStmt) {
+	if stmt == nil {
+		return
+	}
+
+	if v.loopDepth > 0 {
+		pos := v.fset.Position(stmt.Pos())
+		v.issues = append(v.issues, &models.Issue{
+			File:       v.filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       models.IssueGoroutinePerRequest,
+			Severity:   models.SeverityLevelMedium,
+			Message:    "Goroutine launched per loop iteration; consider worker pool",
+			Suggestion: "Use a semaphore/worker pool to bound goroutine count",
+		})
+	}
+
+	if capturesRangeVar(stmt) {
+		pos := v.fset.Position(stmt.Pos())
+		v.issues = append(v.issues, &models.Issue{
+			File:       v.filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       models.IssueGoroutineCapturesLoop,
+			Severity:   models.SeverityLevelHigh,
+			Message:    "Goroutine closes over loop variable",
+			Suggestion: "Pass the loop variable as argument to the goroutine",
+		})
+	}
+}
+
+func capturesRangeVar(goStmt *ast.GoStmt) bool {
+	if goStmt.Call == nil {
 		return false
 	}
 
-	hasLoopVarReference := false
-	ast.Inspect(
-		stmt.Call, func(n ast.Node) bool {
-			if ident, ok := n.(*ast.Ident); ok {
-				if ident.Name == "i" || ident.Name == "j" || ident.Name == "k" {
-					hasLoopVarReference = true
-				}
-			}
+	seen := false
+	ast.Inspect(goStmt.Call, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if !ok {
 			return true
-		},
-	)
-
-	return hasLoopVarReference
-}
-
-func (ga *GoroutineAnalyzer) isUnbufferedChannel(call *ast.CallExpr) bool {
-	if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == funcMake {
-		if len(call.Args) >= 1 {
-			if _, ok := call.Args[0].(*ast.ChanType); ok {
-				return len(call.Args) == 1
+		}
+		if ident.Obj != nil && ident.Obj.Kind == ast.Var {
+			if _, ok := ident.Obj.Decl.(*ast.RangeStmt); ok {
+				seen = true
+				return false
 			}
 		}
-	}
-	return false
+		return true
+	})
+	return seen
 }

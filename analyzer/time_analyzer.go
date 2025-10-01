@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type TimeAnalyzer struct{}
@@ -12,88 +14,83 @@ func NewTimeAnalyzer() Analyzer {
 }
 
 func (ta *TimeAnalyzer) Name() string {
-	return "TimeAnalyzer"
+	return "Time Operations"
 }
 
-func (ta *TimeAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	astNode, ok := node.(ast.Node)
+func (ta *TimeAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return []*Issue{}
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	var issues []*Issue
+	visitor := &timeVisitor{
+		fset:      fset,
+		filename:  filename,
+		loopDepth: 0,
+		issues:    make([]*models.Issue, 0, 4),
+	}
 
-	// Use AnalyzerWithContext for proper loop detection
-	ctx := NewAnalyzerWithContext(astNode)
-
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-
-			if !ctx.IsNodeInLoop(call) {
-				return true
-			}
-
-			if ta.isTimeNow(call) {
-				pos := fset.Position(call.Pos())
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueTimeNowInLoop,
-						Severity:   SeverityLevelMedium,
-						Message:    "time.Now() called repeatedly in loop",
-						Suggestion: "Cache time.Now() result outside loop if precision allows",
-					},
-				)
-			}
-
-			if ta.isTimeFormat(call) {
-				pos := fset.Position(call.Pos())
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueTimeAfterLeak,
-						Severity:   SeverityLevelMedium,
-						Message:    "Time formatting in loop is expensive",
-						Suggestion: "Consider caching formatted time or use more efficient format",
-					},
-				)
-			}
-
-			return true
-		},
-	)
-
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-func (ta *TimeAnalyzer) isTimeNow(call *ast.CallExpr) bool {
-	if selExpr, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if ident, ok := selExpr.X.(*ast.Ident); ok {
-			return ident.Name == "time" && selExpr.Sel.Name == "Now"
+type timeVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
+}
+
+func (v *timeVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
 		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.CallExpr:
+		v.inspectCall(n)
 	}
-	return false
+	return v
 }
 
-func (ta *TimeAnalyzer) isTimeFormat(call *ast.CallExpr) bool {
-	if selExpr, ok := call.Fun.(*ast.SelectorExpr); ok {
-		return selExpr.Sel.Name == "Format"
+func (v *timeVisitor) inspectCall(call *ast.CallExpr) {
+	if v.loopDepth == 0 {
+		return
 	}
-	return false
+
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != pkgTime || sel.Sel.Name != methodNow {
+		return
+	}
+
+	pos := v.fset.Position(call.Pos())
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       models.IssueTimeNowInLoop,
+		Severity:   models.SeverityLevelLow,
+		Message:    "time.Now() inside loop",
+		Suggestion: "Compute time once outside the loop",
+	})
 }

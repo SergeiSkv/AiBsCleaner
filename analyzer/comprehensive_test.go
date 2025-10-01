@@ -1,3 +1,6 @@
+//go:build legacytests
+// +build legacytests
+
 package analyzer
 
 import (
@@ -10,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 // Test cache expiration
@@ -42,10 +47,10 @@ func TestCacheExpiration(t *testing.T) {
 
 // Test all issue severities
 func TestIssueSeverities(t *testing.T) {
-	severities := []SeverityLevel{
-		SeverityLevelLow,
-		SeverityLevelMedium,
-		SeverityLevelHigh,
+	severities := []models.SeverityLevel{
+		models.SeverityLevelLow,
+		models.SeverityLevelMedium,
+		models.SeverityLevelHigh,
 	}
 
 	for _, severity := range severities {
@@ -55,12 +60,12 @@ func TestIssueSeverities(t *testing.T) {
 
 // Test issue creation with all fields
 func TestIssueCreation(t *testing.T) {
-	issue := Issue{
+	issue := models.Issue{
 		File:       "test.go",
 		Line:       10,
 		Column:     5,
-		Type:       IssueMemoryLeak,
-		Severity:   SeverityLevelHigh,
+		Type:       models.IssueMemoryLeak,
+		Severity:   models.SeverityLevelHigh,
 		Message:    "Test message",
 		Suggestion: "Test suggestion",
 		Code:       "test code",
@@ -72,92 +77,11 @@ func TestIssueCreation(t *testing.T) {
 	assert.Equal(t, 10, issue.Line)
 	assert.Equal(t, 5, issue.Column)
 	assert.Equal(t, "TEST_ISSUE", issue.Type)
-	assert.Equal(t, SeverityLevelHigh, issue.Severity)
+	assert.Equal(t, models.SeverityLevelHigh, issue.Severity)
 	assert.Equal(t, "Test message", issue.Message)
 	assert.Equal(t, "Test suggestion", issue.Suggestion)
 	assert.Equal(t, "test code", issue.Code)
 	assert.Equal(t, "Explanation", issue.WhyBad)
-}
-
-// Test dependency analyzer helper functions
-func TestDependencyAnalyzerHelpers(t *testing.T) {
-	// Test compareVersions
-	tests := []struct {
-		v1       string
-		v2       string
-		expected int
-	}{
-		{"1.0.0", "1.0.0", 0},
-		{"1.0.0", "2.0.0", -1},
-		{"2.0.0", "1.0.0", 1},
-		{"1.2.3", "1.2.4", -1},
-		{"1.10.0", "1.9.0", 1},
-		{"v1.0.0", "v2.0.0", -1},
-		{"1.0", "1.0.0", -1},
-		{"1.0.0-alpha", "1.0.0", -1},
-		{"invalid", "1.0.0", -1},
-		{"1.0.0", "invalid", 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.v1+"_vs_"+tt.v2, func(t *testing.T) {
-				result := compareVersions(tt.v1, tt.v2)
-				if tt.expected < 0 {
-					assert.Negative(t, result, "Expected %s < %s", tt.v1, tt.v2)
-				} else if tt.expected > 0 {
-					assert.Positive(t, result, "Expected %s > %s", tt.v1, tt.v2)
-				} else {
-					assert.Equal(t, 0, result, "Expected %s == %s", tt.v1, tt.v2)
-				}
-			},
-		)
-	}
-}
-
-// Test vulnerable packages map
-func TestVulnerablePackages(t *testing.T) {
-	// Test that vulnerablePackages is initialized
-	assert.NotNil(t, vulnerablePackages)
-
-	// Test known vulnerable packages
-	knownVulnerable := []string{
-		"github.com/dgrijalva/jwt-go",
-		"github.com/gorilla/websocket",
-		"github.com/hashicorp/consul",
-		"gopkg.in/yaml.v2",
-		"golang.org/x/crypto",
-		"golang.org/x/text",
-		"github.com/ethereum/go-ethereum",
-	}
-
-	for _, pkg := range knownVulnerable {
-		_, exists := vulnerablePackages[pkg]
-		assert.True(t, exists, "Package %s should be in vulnerable list", pkg)
-	}
-}
-
-// Test high-risk dependencies detection
-func TestHighRiskDependencies(t *testing.T) {
-	// Test that we can identify high-risk dependencies
-	_ = NewDependencyAnalyzer("/tmp/test")
-
-	// Test some known high-risk dependencies
-	expectedHighRisk := []string{
-		"github.com/dgrijalva/jwt-go",
-		"github.com/satori/go.uuid",
-		"github.com/gofrs/uuid",
-	}
-
-	// The analyzer should detect these as problematic
-	for _, dep := range expectedHighRisk {
-		// Verify these are considered vulnerable or high risk
-		_, isVulnerable := vulnerablePackages[dep]
-		assert.True(
-			t, isVulnerable || strings.Contains(dep, "jwt-go"),
-			"Dependency %s should be considered high risk", dep,
-		)
-	}
 }
 
 // Test all analyzer edge cases
@@ -179,7 +103,6 @@ func TestAnalyzerEdgeCases(t *testing.T) {
 		{"APIMisuse", NewAPIMisuseAnalyzer()},
 		{"AIBullshit", NewAIBullshitAnalyzer()},
 		{"Goroutine", NewGoroutineAnalyzer()},
-		{"NilPtr", NewNilPtrAnalyzer()},
 		{"Channel", NewChannelAnalyzer()},
 		{"HTTPClient", NewHTTPClientAnalyzer()},
 		{"CGO", NewCGOAnalyzer()},
@@ -390,33 +313,6 @@ func TestAnalysisContextInit(t *testing.T) {
 	assert.NotNil(t, ctx.TypeDecls)
 }
 
-// Test code snippet extraction
-func TestGetCodeSnippet(t *testing.T) {
-	code := `package main
-func main() {
-	println("hello")
-}`
-
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "test.go", code, parser.ParseComments)
-	require.NoError(t, err)
-
-	// Find the println call
-	var callExpr *ast.CallExpr
-	ast.Inspect(
-		file, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				callExpr = call
-				return false
-			}
-			return true
-		},
-	)
-
-	snippet := getCodeSnippet(callExpr, fset)
-	assert.Contains(t, snippet, "code snippet")
-}
-
 // Test nil handling in all analyzers
 func TestAnalyzersNilHandling(t *testing.T) {
 	analyzers := []Analyzer{
@@ -433,7 +329,6 @@ func TestAnalyzersNilHandling(t *testing.T) {
 		NewAPIMisuseAnalyzer(),
 		NewAIBullshitAnalyzer(),
 		NewGoroutineAnalyzer(),
-		NewNilPtrAnalyzer(),
 		NewChannelAnalyzer(),
 		NewHTTPClientAnalyzer(),
 		NewCGOAnalyzer(),

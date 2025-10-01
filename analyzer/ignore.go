@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/token"
 	"strings"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 // IgnoreChecker checks if issues should be ignored based on comments
@@ -24,7 +26,7 @@ func NewIgnoreChecker(fset *token.FileSet, file *ast.File) *IgnoreChecker {
 	ic := &IgnoreChecker{
 		fset:         fset,
 		file:         file,
-		ignoreRanges: make(map[string][]ignoreRange),
+		ignoreRanges: make(map[string][]ignoreRange, 10),
 	}
 	ic.parseIgnoreComments()
 	return ic
@@ -62,7 +64,7 @@ func (ic *IgnoreChecker) processIgnoreDirective(text string, pos token.Pos) {
 		ic.addIgnoreRange("", line+1, line+1)
 	} else {
 		directive := parts[0]
-		var issueTypes []string
+		issueTypes := make([]string, 0, 10)
 		if len(parts) > 1 {
 			issueTypes = strings.Split(parts[1], ",")
 		}
@@ -146,15 +148,15 @@ func (ic *IgnoreChecker) ShouldIgnore(issueType string, line int) bool {
 	return false
 }
 
-// FilterIssues removes issues that should be ignored based on comments
-func FilterIssuesByComments(issues []*Issue, fset *token.FileSet, file *ast.File) []*Issue {
+// FilterIssuesByComments FilterIssues removes issues that should be ignored based on comments
+func FilterIssuesByComments(issues []*models.Issue, fset *token.FileSet, file *ast.File) []*models.Issue {
 	if file == nil || fset == nil {
 		return issues
 	}
 
 	ic := NewIgnoreChecker(fset, file)
 
-	filtered := make([]*Issue, 0, len(issues))
+	filtered := make([]*models.Issue, 0, len(issues))
 	for _, issue := range issues {
 		if issue == nil {
 			continue

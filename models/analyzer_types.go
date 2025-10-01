@@ -1,4 +1,6 @@
-package analyzer
+package models
+
+//go:generate go run github.com/dmarkham/enumer@latest -type=AnalyzerType -trimprefix=Analyzer
 
 // AnalyzerType represents the type of analyzer
 type AnalyzerType uint8
@@ -28,7 +30,6 @@ const (
 	AnalyzerSerialization
 	AnalyzerCrypto
 	AnalyzerPrivacy
-	AnalyzerNilPtr
 	AnalyzerContext
 	AnalyzerErrorHandling
 	AnalyzerAPIMisuse

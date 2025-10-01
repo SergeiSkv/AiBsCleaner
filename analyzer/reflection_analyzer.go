@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type ReflectionAnalyzer struct{}
@@ -12,101 +14,82 @@ func NewReflectionAnalyzer() Analyzer {
 }
 
 func (ra *ReflectionAnalyzer) Name() string {
-	return "ReflectionAnalyzer"
+	return "Reflection Performance"
 }
 
-func (ra *ReflectionAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (ra *ReflectionAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Use context helper for proper loop detection
-	ctx := NewAnalyzerWithContext(astNode)
+	visitor := &reflectVisitor{
+		fset:      fset,
+		filename:  filename,
+		loopDepth: 0,
+		issues:    make([]*models.Issue, 0, 4),
+	}
 
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			callExpr, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-
-			if !ra.isReflectCall(callExpr) {
-				return true
-			}
-
-			pos := fset.Position(callExpr.Pos())
-
-			// Check if this reflection call is in a loop
-			loopDepth := ctx.GetNodeLoopDepth(callExpr)
-			inLoop := loopDepth > 0
-
-			if inLoop {
-				severity := SeverityLevelMedium
-				if loopDepth > 1 {
-					severity = SeverityLevelHigh
-				}
-
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueReflection,
-						Severity:   severity,
-						Message:    "Reflection usage detected in loop - expensive operation",
-						Suggestion: "Consider using type assertions, code generation, or move reflection out of loop",
-						WhyBad: `Reflection in loops is extremely slow:
-• Type introspection: ~100-1000ns per call
-• Method lookup: ~1-10μs per call
-• Value conversion overhead
-• Disables compiler optimizations
-BETTER: Type switches, interfaces, or pre-computed reflection data`,
-					},
-				)
-			} else {
-				// General reflection usage warning
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueReflection,
-						Severity:   SeverityLevelLow,
-						Message:    "Reflection usage detected - consider alternatives for better performance",
-						Suggestion: "Consider using type assertions, interfaces, or code generation instead of reflection",
-					},
-				)
-			}
-
-			return true
-		},
-	)
-
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-func (ra *ReflectionAnalyzer) isReflectCall(call *ast.CallExpr) bool {
-	if selExpr, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if ident, ok := selExpr.X.(*ast.Ident); ok {
-			if ident.Name == "reflect" {
-				return true
-			}
+type reflectVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
+}
+
+func (v *reflectVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
 		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.CallExpr:
+		v.inspectCall(n)
 	}
-	return false
+	return v
 }
 
-// This method is kept for compatibility but not used
-// 	// This method is deprecated in favor of context-based detection
-// }
+func (v *reflectVisitor) inspectCall(call *ast.CallExpr) {
+	if v.loopDepth == 0 {
+		return
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != pkgReflect {
+		return
+	}
+
+	pos := v.fset.Position(call.Pos())
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       models.IssueReflection,
+		Severity:   models.SeverityLevelMedium,
+		Message:    "reflect.* called inside loop",
+		Suggestion: "Cache reflection results or move call outside loop",
+	})
+}

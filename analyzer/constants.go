@@ -4,87 +4,77 @@ package analyzer
 const (
 	// Go built-in functions
 	funcMake    = "make"
-	funcAppend  = "append"
-	funcPrintln = "println"
-	funcNew     = "new"
-	funcLock    = "Lock"
-
-	// Sync methods
-	methodLock           = "Lock"
-	methodUnlock         = "Unlock"
-	methodRLock          = "RLock"
-	methodRUnlock        = "RUnlock"
-	methodClose          = "Close"
-	methodPut            = "Put"
-	methodEncodeToString = "EncodeToString"
+	funcRecover = "recover"
 
 	// Type names
-	typeMutex     = "Mutex"
-	typeRWMutex   = "RWMutex"
-	typeError     = "error"
-	typeInterface = "interface"
-	typeSlice     = "slice"
+	typeMutex   = "Mutex"
+	typeRWMutex = "RWMutex"
 
 	// Database methods
-	methodBegin   = "Begin"
-	methodBeginTx = "BeginTx"
-
-	methodSprintf = "Sprintf"
+	methodBegin        = "Begin"
+	methodBeginTx      = "BeginTx"
+	methodCommit       = "Commit"
+	methodRollback     = "Rollback"
+	methodQuery        = "Query"
+	methodQueryContext = "QueryContext"
+	methodQueryRow     = "QueryRow"
+	methodQueryRowCtx  = "QueryRowContext"
+	methodExec         = "Exec"
+	methodExecContext  = "ExecContext"
+	methodSprintf      = "Sprintf"
+	methodClose        = "Close"
 
 	// HTTP methods
 	methodGet       = "Get"
 	methodPost      = "Post"
+	methodHead      = "Head"
+	methodPostForm  = "PostForm"
 	methodClient    = "Client"
-	methodTransport = "Transport"
 	methodTimeout   = "Timeout"
 	methodDial      = "Dial"
+	methodListen    = "Listen"
+	methodListenTCP = "ListenTCP"
+	methodListenUDP = "ListenUDP"
 
 	// IO methods
-	methodRead     = "Read"
-	methodWrite    = "Write"
-	methodReadAll  = "ReadAll"
-	methodReadFile = "ReadFile"
 	methodOpen     = "Open"
+	methodOpenFile = "OpenFile"
 	methodCreate   = "Create"
+	methodNewFile  = "NewFile"
+
+	// Concurrency helpers
+	methodAdd = "Add"
+
+	// Reflection/regex/serialization helpers
+	methodCompile     = "Compile"
+	methodMustCompile = "MustCompile"
+	methodMarshal     = "Marshal"
+	methodUnmarshal   = "Unmarshal"
+	methodNow         = "Now"
 
 	// Package names
 	pkgFmt     = "fmt"
-	pkgRand    = "rand"
 	pkgOS      = "os"
 	pkgHTTP    = "http"
-	pkgIO      = "io"
-	pkgIOutil  = "ioutil"
 	pkgTime    = "time"
 	pkgContext = "context"
 	pkgSync    = "sync"
 	pkgRegexp  = "regexp"
-	pkgBase64  = "base64"
-	pkgBytes   = "bytes"
 	pkgSQL     = "sql"
 	pkgNet     = "net"
-
-	// Method names for serialization
-	methodDecodeString = "DecodeString"
+	pkgJSON    = "json"
+	pkgReflect = "reflect"
 
 	// Test constants
 	testPackageMain = `package test
 func main() {}`
+)
 
-	// String constants
-	emptyString = `""`
-	nilString   = "nil"
-
-	// Crypto methods
-	methodSum = "Sum"
-
-	// External API severity strings (for parsing OSV/CVE data)
-	osvSeverityCritical = "CRITICAL"
-	osvSeverityHigh     = "HIGH"
-	osvSeverityMedium   = "MEDIUM"
-	osvSeverityLow      = "LOW"
-
-	// License constants
-	licenseApache2 = "Apache-2.0"
-	licenseBSD3    = "BSD-3-Clause"
-	licenseUnknown = "Unknown"
+// Numeric constants for performance thresholds
+const (
+	MaxNestedLoops    = 3
+	MaxFunctionParams = 5
+	MaxSliceCapacity  = 1000
+	MaxMapCapacity    = 100
+	MaxSearchDepth    = 10
 )

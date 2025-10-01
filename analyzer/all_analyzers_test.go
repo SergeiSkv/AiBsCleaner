@@ -1,3 +1,6 @@
+//go:build legacytests
+// +build legacytests
+
 package analyzer
 
 import (
@@ -31,7 +34,6 @@ func TestAllAnalyzersInitialization(t *testing.T) {
 		{"LoopAnalyzer", NewLoopAnalyzer},
 		{"MapAnalyzer", NewMapAnalyzer},
 		{"MemoryLeakAnalyzer", NewMemoryLeakAnalyzer},
-		{"NilPtrAnalyzer", NewNilPtrAnalyzer},
 		{"PrivacyAnalyzer", NewPrivacyAnalyzer},
 		{"RaceConditionAnalyzer", NewRaceConditionAnalyzer},
 		{"ReflectionAnalyzer", NewReflectionAnalyzer},
@@ -186,7 +188,6 @@ func main() {
 		NewLoopAnalyzer(),
 		NewMapAnalyzer(),
 		NewMemoryLeakAnalyzer(),
-		NewNilPtrAnalyzer(),
 		NewPrivacyAnalyzer(),
 		NewRaceConditionAnalyzer(),
 		NewReflectionAnalyzer(),

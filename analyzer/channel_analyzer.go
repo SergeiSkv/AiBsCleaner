@@ -3,338 +3,325 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
-// ChannelAnalyzer detects potential channel deadlocks and misuse
-type ChannelAnalyzer struct {
-	channels   map[string]*ChannelInfo
-	goroutines []*GoroutineInfo
-}
-
-type ChannelInfo struct {
-	Name       string
-	Buffered   bool
-	BufferSize int
-	Sends      []token.Position
-	Receives   []token.Position
-	Closes     []token.Position
-}
-
-type GoroutineInfo struct {
-	Position  token.Position
-	Channels  []string
-	HasSelect bool
-}
+type ChannelAnalyzer struct{}
 
 func NewChannelAnalyzer() Analyzer {
-	return &ChannelAnalyzer{
-		channels:   make(map[string]*ChannelInfo),
-		goroutines: []*GoroutineInfo{},
-	}
+	return &ChannelAnalyzer{}
 }
 
 func (ca *ChannelAnalyzer) Name() string {
-	return "ChannelAnalyzer"
+	return "Channel Patterns"
 }
 
-func (ca *ChannelAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (ca *ChannelAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Reset state
-	ca.channels = make(map[string]*ChannelInfo)
-	ca.goroutines = []*GoroutineInfo{}
-
-	// First pass: collect channel declarations and operations
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.GenDecl:
-				ca.analyzeChannelDecl(node, fset)
-			case *ast.AssignStmt:
-				ca.analyzeChannelAssign(node, fset)
-			case *ast.SendStmt:
-				ca.analyzeChannelSend(node, fset)
-			case *ast.UnaryExpr:
-				if node.Op == token.ARROW {
-					ca.analyzeChannelReceive(node, fset)
-				}
-			case *ast.GoStmt:
-				ca.analyzeGoroutine(node, fset)
-			case *ast.CallExpr:
-				ca.analyzeChannelClose(node, fset)
-			}
-			return true
-		},
-	)
-
-	// AnalyzeAll collected data for issues
-	issues = append(issues, ca.detectDeadlocks(filename, fset)...)
-	issues = append(issues, ca.detectUnbufferedInGoroutine(filename, fset)...)
-	issues = append(issues, ca.detectMultipleClose(filename, fset)...)
-	issues = append(issues, ca.detectSendOnClosed(filename, fset)...)
-
-	return issues
+	ctx := newChannelContext(fset, filename)
+	ast.Walk(&channelVisitor{ctx: ctx}, file)
+	ctx.finalize()
+	return ctx.issues
 }
 
-func (ca *ChannelAnalyzer) analyzeChannelDecl(decl *ast.GenDecl, _ *token.FileSet) {
+type channelVisitor struct {
+	ctx *channelContext
+}
+
+func (v *channelVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		v.ctx.leave()
+		return nil
+	}
+
+	isLoop := false
+	switch node.(type) {
+	case *ast.ForStmt, *ast.RangeStmt:
+		isLoop = true
+	}
+
+	if isLoop {
+		v.ctx.enterLoop()
+	} else {
+		v.ctx.pushFlat()
+	}
+
+	switch n := node.(type) {
+	case *ast.GenDecl:
+		v.ctx.recordDecl(n)
+	case *ast.AssignStmt:
+		v.ctx.recordAssign(n)
+	case *ast.GoStmt:
+		v.ctx.markGoroutine(n)
+	case *ast.SendStmt:
+		v.ctx.markSend(n)
+	case *ast.UnaryExpr:
+		if n.Op == token.ARROW {
+			v.ctx.markReceive(n)
+		}
+	case *ast.CallExpr:
+		v.ctx.markClose(n)
+	}
+
+	return v
+}
+
+type channelContext struct {
+	fset     *token.FileSet
+	filename string
+	issues   []*models.Issue
+
+	loopDepth int
+	stack     []bool
+
+	chans map[string]*channelData
+}
+
+type channelData struct {
+	buffered          bool
+	sends             []token.Position
+	receives          []token.Position
+	closes            []token.Position
+	goroutineSends    bool
+	goroutineReceives bool
+}
+
+func newChannelContext(fset *token.FileSet, filename string) *channelContext {
+	return &channelContext{
+		fset:     fset,
+		filename: filename,
+		issues:   make([]*models.Issue, 0, 8),
+		stack:    make([]bool, 0, 32),
+		chans:    make(map[string]*channelData, 16),
+	}
+}
+
+func (ctx *channelContext) pushFlat() {
+	ctx.stack = append(ctx.stack, false)
+}
+
+func (ctx *channelContext) leave() {
+	if len(ctx.stack) == 0 {
+		return
+	}
+	last := ctx.stack[len(ctx.stack)-1]
+	ctx.stack = ctx.stack[:len(ctx.stack)-1]
+	if last && ctx.loopDepth > 0 {
+		ctx.loopDepth--
+	}
+}
+
+func (ctx *channelContext) enterLoop() {
+	ctx.stack = append(ctx.stack, true)
+	ctx.loopDepth++
+}
+
+func (ctx *channelContext) recordDecl(decl *ast.GenDecl) {
 	for _, spec := range decl.Specs {
-		valueSpec, ok := spec.(*ast.ValueSpec)
+		vs, ok := spec.(*ast.ValueSpec)
 		if !ok {
 			continue
 		}
-		ca.analyzeValueSpec(valueSpec)
-	}
-}
-
-func (ca *ChannelAnalyzer) analyzeValueSpec(valueSpec *ast.ValueSpec) {
-	for i, name := range valueSpec.Names {
-		if i >= len(valueSpec.Values) {
-			continue
-		}
-
-		call, ok := valueSpec.Values[i].(*ast.CallExpr)
-		if !ok {
-			continue
-		}
-
-		if info := ca.extractChannelInfo(call, name.Name); info != nil {
-			ca.channels[name.Name] = info
+		for i, name := range vs.Names {
+			if name == nil || i >= len(vs.Values) {
+				continue
+			}
+			call, ok := vs.Values[i].(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			if info := resolveChannel(call); info != nil {
+				ctx.chans[name.Name] = info
+			}
 		}
 	}
 }
 
-func (ca *ChannelAnalyzer) extractChannelInfo(call *ast.CallExpr, name string) *ChannelInfo {
+func (ctx *channelContext) recordAssign(assign *ast.AssignStmt) {
+	for i, rhs := range assign.Rhs {
+		call, ok := rhs.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		if i >= len(assign.Lhs) {
+			continue
+		}
+		ident, ok := assign.Lhs[i].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if info := resolveChannel(call); info != nil {
+			ctx.chans[ident.Name] = info
+		}
+	}
+}
+
+func resolveChannel(call *ast.CallExpr) *channelData {
 	ident, ok := call.Fun.(*ast.Ident)
 	if !ok || ident.Name != "make" || len(call.Args) == 0 {
 		return nil
 	}
-
-	_, ok = call.Args[0].(*ast.ChanType)
-	if !ok {
+	if _, ok := call.Args[0].(*ast.ChanType); !ok {
 		return nil
 	}
 
-	info := &ChannelInfo{
-		Name:     name,
-		Buffered: len(call.Args) > 1,
-	}
-
+	data := &channelData{}
 	if len(call.Args) > 1 {
-		if lit, ok := call.Args[1].(*ast.BasicLit); ok {
-			if lit.Kind == token.INT {
-				info.BufferSize = 1 // Simplified
-			}
+		data.buffered = true
+		if blit, ok := call.Args[1].(*ast.BasicLit); ok && blit.Kind == token.INT && blit.Value == "0" {
+			data.buffered = false
 		}
 	}
-
-	return info
+	return data
 }
 
-func (ca *ChannelAnalyzer) analyzeChannelAssign(assign *ast.AssignStmt, _ *token.FileSet) {
-	for i, rhs := range assign.Rhs {
-		call, ok := rhs.(*ast.CallExpr)
-		if !ok || i >= len(assign.Lhs) {
-			continue
-		}
-
-		lhs, ok := assign.Lhs[i].(*ast.Ident)
-		if !ok {
-			continue
-		}
-
-		if info := ca.extractChannelInfo(call, lhs.Name); info != nil {
-			ca.channels[lhs.Name] = info
-		}
+func (ctx *channelContext) markSend(send *ast.SendStmt) {
+	ident, ok := send.Chan.(*ast.Ident)
+	if !ok {
+		return
+	}
+	ch := ctx.ensureChannel(ident.Name)
+	ch.sends = append(ch.sends, ctx.fset.Position(send.Pos()))
+	if ctx.loopDepth > 0 {
+		ch.goroutineSends = true
 	}
 }
 
-func (ca *ChannelAnalyzer) analyzeChannelSend(send *ast.SendStmt, fset *token.FileSet) {
-	if ident, ok := send.Chan.(*ast.Ident); ok {
-		if info, exists := ca.channels[ident.Name]; exists {
-			info.Sends = append(info.Sends, fset.Position(send.Pos()))
-		}
+func (ctx *channelContext) markReceive(recv *ast.UnaryExpr) {
+	ident, ok := recv.X.(*ast.Ident)
+	if !ok {
+		return
+	}
+	ch := ctx.ensureChannel(ident.Name)
+	ch.receives = append(ch.receives, ctx.fset.Position(recv.Pos()))
+	if ctx.loopDepth > 0 {
+		ch.goroutineReceives = true
 	}
 }
 
-func (ca *ChannelAnalyzer) analyzeChannelReceive(recv *ast.UnaryExpr, fset *token.FileSet) {
-	if ident, ok := recv.X.(*ast.Ident); ok {
-		if info, exists := ca.channels[ident.Name]; exists {
-			info.Receives = append(info.Receives, fset.Position(recv.Pos()))
-		}
-	}
-}
-
-func (ca *ChannelAnalyzer) analyzeChannelClose(call *ast.CallExpr, fset *token.FileSet) {
+func (ctx *channelContext) markClose(call *ast.CallExpr) {
 	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != "close" || len(call.Args) == 0 {
+		return
+	}
+	target, ok := call.Args[0].(*ast.Ident)
 	if !ok {
 		return
 	}
+	ch := ctx.ensureChannel(target.Name)
+	ch.closes = append(ch.closes, ctx.fset.Position(call.Pos()))
+}
 
-	if ident.Name != "close" || len(call.Args) == 0 {
+func (ctx *channelContext) markGoroutine(goStmt *ast.GoStmt) {
+	hasSelect := false
+	ast.Inspect(goStmt.Call, func(n ast.Node) bool {
+		if _, ok := n.(*ast.SelectStmt); ok {
+			hasSelect = true
+			return false
+		}
+		return true
+	})
+
+	if hasSelect {
 		return
 	}
 
-	chanIdent, ok := call.Args[0].(*ast.Ident)
-	if !ok {
-		return
-	}
-
-	if info, exists := ca.channels[chanIdent.Name]; exists {
-		info.Closes = append(info.Closes, fset.Position(call.Pos()))
-	}
-}
-
-func (ca *ChannelAnalyzer) analyzeGoroutine(goStmt *ast.GoStmt, fset *token.FileSet) {
-	info := &GoroutineInfo{
-		Position: fset.Position(goStmt.Pos()),
-		Channels: []string{},
-	}
-
-	// Check for select statement
-	ast.Inspect(
-		goStmt.Call, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.SelectStmt:
-				info.HasSelect = true
-			case *ast.SendStmt:
-				if ident, ok := node.Chan.(*ast.Ident); ok {
-					info.Channels = append(info.Channels, ident.Name)
-				}
-			case *ast.UnaryExpr:
-				if node.Op == token.ARROW {
-					if ident, ok := node.X.(*ast.Ident); ok {
-						info.Channels = append(info.Channels, ident.Name)
-					}
-				}
+	ast.Inspect(goStmt.Call, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.SendStmt:
+			if ident, ok := node.Chan.(*ast.Ident); ok {
+				ch := ctx.ensureChannel(ident.Name)
+				ch.goroutineSends = true
 			}
-			return true
-		},
-	)
-
-	ca.goroutines = append(ca.goroutines, info)
-}
-
-func (ca *ChannelAnalyzer) detectDeadlocks(filename string, _ *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	// Check for unbuffered channel operations outside goroutines
-	for name, info := range ca.channels {
-		if !info.Buffered {
-			// If there are sends without corresponding receives in goroutines
-			if len(info.Sends) > 0 && len(info.Receives) == 0 {
-				for _, pos := range info.Sends {
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueChannelDeadlock,
-							Severity:   SeverityLevelHigh,
-							Message:    "Potential deadlock: sending on unbuffered channel without receiver",
-							Suggestion: "Use buffered channel or ensure receiver is ready",
-						},
-					)
+		case *ast.UnaryExpr:
+			if node.Op == token.ARROW {
+				if ident, ok := node.X.(*ast.Ident); ok {
+					ch := ctx.ensureChannel(ident.Name)
+					ch.goroutineReceives = true
 				}
 			}
 		}
-		_ = name
-	}
-
-	return issues
+		return true
+	})
 }
 
-func (ca *ChannelAnalyzer) detectUnbufferedInGoroutine(filename string, _ *token.FileSet) []*Issue {
-	var issues []*Issue
+func (ctx *channelContext) ensureChannel(name string) *channelData {
+	if data, ok := ctx.chans[name]; ok {
+		return data
+	}
+	data := &channelData{}
+	ctx.chans[name] = data
+	return data
+}
 
-	for _, goroutine := range ca.goroutines {
-		if !goroutine.HasSelect {
-			for _, chanName := range goroutine.Channels {
-				if info, exists := ca.channels[chanName]; exists {
-					if !info.Buffered {
-						issues = append(
-							issues, &Issue{
-								File:       filename,
-								Line:       goroutine.Position.Line,
-								Column:     goroutine.Position.Column,
-								Position:   goroutine.Position,
-								Type:       IssueUnbufferedChannel,
-								Severity:   SeverityLevelMedium,
-								Message:    "Unbuffered channel operation in goroutine without select",
-								Suggestion: "Use select with default case or buffered channel to prevent blocking",
-							},
-						)
-						break
-					}
+func (ctx *channelContext) finalize() {
+	for name, ch := range ctx.chans {
+		if len(ch.closes) > 1 {
+			for _, pos := range ch.closes[1:] {
+				ctx.addIssue(pos, models.IssueChannelMultipleClose,
+					"channel '"+name+"' closed multiple times")
+			}
+		}
+
+		if len(ch.closes) > 0 {
+			closeLine := ch.closes[0].Line
+			for _, sendPos := range ch.sends {
+				if sendPos.Line > closeLine {
+					ctx.addIssue(sendPos, models.IssueChannelSendOnClosed,
+						"sending on closed channel '"+name+"'")
 				}
 			}
 		}
-	}
 
-	return issues
-}
-
-func (ca *ChannelAnalyzer) detectMultipleClose(filename string, _ *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	for name, info := range ca.channels {
-		if len(info.Closes) > 1 {
-			for _, pos := range info.Closes[1:] {
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueChannelMultipleClose,
-						Severity:   SeverityLevelHigh,
-						Message:    "Channel '" + name + "' closed multiple times",
-						Suggestion: "Ensure channel is closed only once, typically by the sender",
-					},
-				)
-			}
-		}
-	}
-
-	return issues
-}
-
-func (ca *ChannelAnalyzer) detectSendOnClosed(filename string, _ *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	for name, info := range ca.channels {
-		if len(info.Closes) > 0 {
-			closePos := info.Closes[0]
-			for _, sendPos := range info.Sends {
-				// Simplified: check if send appears after close in file
-				if sendPos.Line > closePos.Line {
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       sendPos.Line,
-							Column:     sendPos.Column,
-							Position:   sendPos,
-							Type:       IssueChannelSendOnClosed,
-							Severity:   SeverityLevelHigh,
-							Message:    "Sending on potentially closed channel '" + name + "'",
-							Suggestion: "Check channel state before sending or restructure code flow",
-						},
-					)
+		if !ch.buffered {
+			if len(ch.sends) > 0 && len(ch.receives) == 0 {
+				for _, pos := range ch.sends {
+					ctx.addIssue(pos, models.IssueChannelDeadlock,
+						"send on unbuffered channel without matching receive")
 				}
 			}
-		}
-	}
 
-	return issues
+			if ch.goroutineSends || ch.goroutineReceives {
+				ctx.addIssue(ch.firstOp(), models.IssueUnbufferedChannel,
+					"unbuffered channel used in goroutine without select")
+			}
+		}
+
+		_ = ch
+	}
+}
+
+func (ch *channelData) firstOp() token.Position {
+	if len(ch.sends) > 0 {
+		return ch.sends[0]
+	}
+	if len(ch.receives) > 0 {
+		return ch.receives[0]
+	}
+	if len(ch.closes) > 0 {
+		return ch.closes[0]
+	}
+	return token.Position{}
+}
+
+func (ctx *channelContext) addIssue(pos token.Position, issueType models.IssueType, msg string) {
+	ctx.issues = append(ctx.issues, &models.Issue{
+		File:     ctx.filename,
+		Line:     pos.Line,
+		Column:   pos.Column,
+		Position: pos,
+		Type:     issueType,
+		Severity: issueType.Severity(),
+		Message:  msg,
+	})
 }

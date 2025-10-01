@@ -105,7 +105,7 @@ func BenchmarkAnalyzeWithCache(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	// First call to populate cache
+	// First call to populate the cache
 	_ = AnalyzeAll("bench_cache.go", file, fset)
 
 	b.ResetTimer()

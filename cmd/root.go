@@ -6,13 +6,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/SergeiSkv/AiBsCleaner/analyzer"
 	"github.com/SergeiSkv/AiBsCleaner/cache"
+	"github.com/SergeiSkv/AiBsCleaner/models"
 	"github.com/SergeiSkv/AiBsCleaner/version"
 )
 
@@ -32,10 +37,10 @@ var (
 
 // JSONOutput represents the JSON structure for results
 type JSONOutput struct {
-	Target    string            `json:"target"`
-	Summary   Summary           `json:"summary"`
-	Issues    []*analyzer.Issue `json:"issues"`
-	FileStats map[string]int    `json:"file_stats"`
+	Target    string          `json:"target"`
+	Summary   Summary         `json:"summary"`
+	Issues    []*models.Issue `json:"issues"`
+	FileStats []fileStat      `json:"file_stats"`
 }
 
 // Summary contains overall statistics
@@ -140,10 +145,12 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("AiBsCleaner version %s\n", version.Version)
-		fmt.Printf("Commit: %s\n", version.CommitHash)
-		fmt.Printf("Built: %s\n", version.BuiltAt)
-		fmt.Println("\nStop AI bullshit, write performant Go!")
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("AiBsCleaner version %s\n", version.Version))
+		sb.WriteString(fmt.Sprintf("Commit: %s\n", version.CommitHash))
+		sb.WriteString(fmt.Sprintf("Built: %s\n", version.BuiltAt))
+		sb.WriteString("\nStop AI bullshit, write performant Go!\n")
+		fmt.Print(sb.String())
 	},
 }
 
@@ -166,19 +173,54 @@ var statsCmd = &cobra.Command{
 
 		stats := cacheDB.GetStats()
 
-		fmt.Println("Cache Statistics:")
-		fmt.Println("====================")
-		fmt.Printf("Total files analyzed:  %d\n", stats["total_files"])
-		fmt.Printf("Total issues found:    %d\n", stats["total_issues"])
-		fmt.Printf("Ignored issues:        %d\n", stats["ignored_issues"])
-		fmt.Printf("Fixed issues:          %d\n", stats["fixed_issues"])
-		fmt.Printf("\n")
-		fmt.Printf("Cache location: %s\n", cacheDB.GetCacheDir())
+		var sb strings.Builder
+		sb.WriteString("Cache Statistics:\n")
+		sb.WriteString("====================\n")
+		sb.WriteString(fmt.Sprintf("Total files analyzed:  %d\n", stats["total_files"]))
+		sb.WriteString(fmt.Sprintf("Total issues found:    %d\n", stats["total_issues"]))
+		sb.WriteString(fmt.Sprintf("Ignored issues:        %d\n", stats["ignored_issues"]))
+		sb.WriteString(fmt.Sprintf("Fixed issues:          %d\n", stats["fixed_issues"]))
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("Cache location: %s\n", cacheDB.GetCacheDir()))
 
 		if fileInfo, err := os.Stat(filepath.Join(cacheDB.GetCacheDir(), cache.CacheFile)); err == nil {
-			fmt.Printf("Cache size:     %.2f MB\n", float64(fileInfo.Size())/(1024*1024))
+			sb.WriteString(fmt.Sprintf("Cache size:     %.2f MB\n", float64(fileInfo.Size())/(1024*1024)))
 		}
+		fmt.Print(sb.String())
 	},
+}
+
+var analyzers = []struct {
+	Name        string
+	Description string
+}{
+	{"LoopAnalyzer", "Detects inefficient loops and allocations"},
+	{"StringConcatAnalyzer", "Finds inefficient string concatenations"},
+	{"DeferAnalyzer", "Identifies defer misuse and overhead"},
+	{"SliceAnalyzer", "Detects slice capacity and append issues"},
+	{"MapAnalyzer", "Finds map initialization problems"},
+	{"ReflectionAnalyzer", "Warns about reflection performance impact"},
+	{"GoroutineAnalyzer", "Detects goroutine leaks and misuse"},
+	{"InterfaceAnalyzer", "Finds unnecessary interface allocations"},
+	{"RegexAnalyzer", "Identifies regex compilation in hot paths"},
+	{"TimeAnalyzer", "Detects time.After leaks and inefficiencies"},
+	{"ComplexityAnalyzer", "Measures cyclomatic complexity"},
+	{"MemoryLeakAnalyzer", "Finds potential memory leaks"},
+	{"DatabaseAnalyzer", "Detects database performance issues"},
+	{"AIBullshitDetector", "Identifies AI-generated anti-patterns"},
+	{"ContextAnalyzer", "Finds context misuse and leaks"},
+	{"ChannelAnalyzer", "Detects channel deadlocks and inefficiencies"},
+	{"RaceConditionAnalyzer", "Identifies potential race conditions"},
+	{"ErrorHandlingAnalyzer", "Finds error handling issues"},
+	{"HTTPClientAnalyzer", "Detects HTTP client problems"},
+	{"GCPressureAnalyzer", "Identifies high GC pressure patterns"},
+	{"ConcurrencyPatternsAnalyzer", "Finds concurrency anti-patterns"},
+	{"CPUOptimizationAnalyzer", "Detects CPU-intensive operations"},
+	{"NetworkPatternsAnalyzer", "Finds network performance issues"},
+	{"SyncPoolAnalyzer", "Suggests sync.Pool optimizations"},
+	{"StructLayoutAnalyzer", "Optimizes struct field alignment and memory layout"},
+	{"PrivacyAnalyzer", "Detects privacy issues and data leaks"},
+	{"DependencyAnalyzer", "Checks dependency health and vulnerabilities"},
 }
 
 var listCmd = &cobra.Command{
@@ -186,38 +228,6 @@ var listCmd = &cobra.Command{
 	Short: "List all available analyzers",
 	Long:  `Shows all available analyzers and their detection patterns.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		analyzers := []struct {
-			Name        string
-			Description string
-		}{
-			{"LoopAnalyzer", "Detects inefficient loops and allocations"},
-			{"StringConcatAnalyzer", "Finds inefficient string concatenations"},
-			{"DeferAnalyzer", "Identifies defer misuse and overhead"},
-			{"SliceAnalyzer", "Detects slice capacity and append issues"},
-			{"MapAnalyzer", "Finds map initialization problems"},
-			{"ReflectionAnalyzer", "Warns about reflection performance impact"},
-			{"GoroutineAnalyzer", "Detects goroutine leaks and misuse"},
-			{"InterfaceAnalyzer", "Finds unnecessary interface allocations"},
-			{"RegexAnalyzer", "Identifies regex compilation in hot paths"},
-			{"TimeAnalyzer", "Detects time.After leaks and inefficiencies"},
-			{"ComplexityAnalyzer", "Measures cyclomatic complexity"},
-			{"MemoryLeakAnalyzer", "Finds potential memory leaks"},
-			{"DatabaseAnalyzer", "Detects database performance issues"},
-			{"AIBullshitDetector", "Identifies AI-generated anti-patterns"},
-			{"ContextAnalyzer", "Finds context misuse and leaks"},
-			{"ChannelAnalyzer", "Detects channel deadlocks and inefficiencies"},
-			{"RaceConditionAnalyzer", "Identifies potential race conditions"},
-			{"ErrorHandlingAnalyzer", "Finds error handling issues"},
-			{"HTTPClientAnalyzer", "Detects HTTP client problems"},
-			{"GCPressureAnalyzer", "Identifies high GC pressure patterns"},
-			{"ConcurrencyPatternsAnalyzer", "Finds concurrency anti-patterns"},
-			{"CPUOptimizationAnalyzer", "Detects CPU-intensive operations"},
-			{"NetworkPatternsAnalyzer", "Finds network performance issues"},
-			{"SyncPoolAnalyzer", "Suggests sync.Pool optimizations"},
-			{"PrivacyAnalyzer", "Detects privacy issues and data leaks"},
-			{"DependencyAnalyzer", "Checks dependency health and vulnerabilities"},
-		}
-
 		fmt.Println("Available Analyzers:")
 		fmt.Println("====================")
 		for _, a := range analyzers {
@@ -298,11 +308,11 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-func analyzeTarget(target string, config *Config) []*analyzer.Issue {
+func analyzeTarget(target string, config *Config) []*models.Issue {
 	if config == nil {
 		return nil
 	}
-	var allIssues []*analyzer.Issue
+	var allIssues []*models.Issue
 	var filesAnalyzed int
 	var totalLines int
 
@@ -310,6 +320,8 @@ func analyzeTarget(target string, config *Config) []*analyzer.Issue {
 	depIssues := analyzer.AnalyzeDependencies(target)
 	allIssues = append(allIssues, depIssues...)
 
+	// Collect all Go files first
+	var filesToAnalyze []string
 	err := filepath.Walk(
 		target, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -325,26 +337,52 @@ func analyzeTarget(target string, config *Config) []*analyzer.Issue {
 				return nil
 			}
 
-			// Process only Go files
-			if !isGoFile(path, info) {
-				return nil
+			// Collect only Go files
+			if isGoFile(path, info) {
+				filesToAnalyze = append(filesToAnalyze, path)
 			}
-
-			// Count the file
-			filesAnalyzed++
-			totalLines += countLines(path)
-
-			issues := analyzeFile(path, config)
-			allIssues = append(allIssues, issues...)
 
 			return nil
 		},
 	)
 
 	if err != nil {
-		slog.Error("Error analyzing target", "error", err)
+		slog.Error("Error scanning target", "error", err)
 		os.Exit(1)
 	}
+
+	// Analyze files in parallel
+	numWorkers := runtime.NumCPU()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	fileChan := make(chan string, len(filesToAnalyze))
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range fileChan {
+				issues := analyzeFile(path, config)
+				lines := countLines(path)
+
+				mu.Lock()
+				allIssues = append(allIssues, issues...)
+				filesAnalyzed++
+				totalLines += lines
+				mu.Unlock()
+			}
+		}()
+	}
+
+	// Send files to workers
+	for _, path := range filesToAnalyze {
+		fileChan <- path
+	}
+	close(fileChan)
+
+	// Wait for all workers to finish
+	wg.Wait()
 
 	// Print statistics
 	if !jsonOutput {
@@ -356,11 +394,37 @@ func analyzeTarget(target string, config *Config) []*analyzer.Issue {
 	return allIssues
 }
 
-func outputJSON(target string, issues []*analyzer.Issue) {
-	// Group issues by file for file stats
-	fileStats := make(map[string]int)
+type fileStat struct {
+	Filename string
+	Count    int
+}
+
+func outputJSON(target string, issues []*models.Issue) {
+	// Используем срез для подсчёта по файлам
+	var fileStats []fileStat
+
+	// Функция для поиска индекса файла в срезе
+	findFileIndex := func(filename string) int {
+		for i, f := range fileStats {
+			if f.Filename == filename {
+				return i
+			}
+		}
+		return -1
+	}
+
 	for _, issue := range issues {
-		fileStats[issue.Position.Filename]++
+		idx := findFileIndex(issue.Position.Filename)
+		if idx == -1 {
+			fileStats = append(
+				fileStats, fileStat{
+					Filename: issue.Position.Filename,
+					Count:    1,
+				},
+			)
+		} else {
+			fileStats[idx].Count++
+		}
 	}
 
 	// Calculate summary
@@ -377,98 +441,180 @@ func outputJSON(target string, issues []*analyzer.Issue) {
 		Target:    target,
 		Summary:   summary,
 		Issues:    issues,
-		FileStats: fileStats,
+		FileStats: fileStats, // тут уже срез вместо map
 	}
 
-	// Marshal and print JSON
-	jsonData, err := json.MarshalIndent(output, "", "  ")
-	if err != nil {
-		slog.Error("Error marshaling JSON", "error", err)
+	enc := json.NewEncoder(os.Stdout)
+	if err := enc.Encode(output); err != nil {
+		slog.Error("Error encoding JSON", "error", err)
 		os.Exit(1)
 	}
-
-	fmt.Println(string(jsonData))
 }
 
-func outputHuman(_ string, issues []*analyzer.Issue) {
+func outputHuman(_ string, issues []*models.Issue) {
 	if len(issues) == 0 {
 		fmt.Println("✅ No performance issues found!")
 		return
 	}
 
-	fmt.Printf("\n🚨 Found %d performance issues:\n\n", len(issues))
-
-	// Check if compact mode (IDE-friendly output)
 	compactMode := os.Getenv("AIBSCLEANER_COMPACT") == "1"
-
 	if compactMode {
-		// Compact mode: one line per issue, IDE-clickable format
-		var sb strings.Builder
-		sb.Grow(len(issues) * 150) // Pre-allocate
-
-		for _, issue := range issues {
-			severityIcon := getSeverityIcon(issue.Severity)
-			// Standard compiler error format that all IDEs understand
-			sb.WriteString(
-				fmt.Sprintf(
-					"%s:%d:%d: %s [%s] %s - %s\n",
-					issue.Position.Filename, issue.Position.Line, issue.Position.Column,
-					severityIcon, issue.Type, issue.Message, issue.Suggestion,
-				),
-			)
-		}
-		fmt.Print(sb.String())
+		printCompactIssues(issues)
 	} else {
-		// Group issues by analyzer type
-		analyzerGroups := getAnalyzerGroups()
-		groupedIssues := make(map[string][]*analyzer.Issue)
-
-		for _, issue := range issues {
-			group := getAnalyzerGroup(issue.Type)
-			groupedIssues[group] = append(groupedIssues[group], issue)
-		}
-
-		// Build output using string builder for efficiency
-		var sb strings.Builder
-		sb.Grow(len(issues) * 200) // Pre-allocate space
-
-		// Print issues grouped by analyzer category
-		for _, group := range analyzerGroups {
-			groupIssues, exists := groupedIssues[group.Name]
-			if !exists || len(groupIssues) == 0 {
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("%s %s (%d issues):\n", group.Icon, group.Name, len(groupIssues)))
-			sb.WriteString(strings.Repeat("─", 50))
-			sb.WriteString("\n")
-
-			for _, issue := range groupIssues {
-				severityIcon := getSeverityIcon(issue.Severity)
-				// Format: file:line:column - this format is clickable in most IDEs
-				sb.WriteString(
-					fmt.Sprintf(
-						"  %s %s:%d:%d [%s]\n",
-						severityIcon, issue.Position.Filename, issue.Position.Line, issue.Position.Column, issue.Type,
-					),
-				)
-				sb.WriteString(fmt.Sprintf("     %s\n", issue.Message))
-				if issue.Suggestion != "" {
-					sb.WriteString(fmt.Sprintf("     💡 %s\n", issue.Suggestion))
-				}
-			}
-			sb.WriteString("\n")
-		}
-
-		// Print all at once
-		fmt.Print(sb.String())
+		printGroupedIssues(issues)
 	}
 
-	// Summary
-	high, medium, low := countBySeverity(issues)
-	fmt.Printf("📊 Summary: %d HIGH, %d MEDIUM, %d LOW\n", high, medium, low)
+	printSummary(issues)
 }
 
-func analyzeFile(filename string, config *Config) []*analyzer.Issue {
+func printSummary(issues []*models.Issue) {
+	high, medium, low := countBySeverity(issues)
+	fmt.Printf("Summary: %d HIGH, %d MEDIUM, %d LOW\n", high, medium, low)
+}
+
+type groupWithIssues struct {
+	group  analyzerGroup
+	issues []*models.Issue
+}
+
+func printGroupedIssues(issues []*models.Issue) {
+	grouped := groupIssuesByAnalyzer(issues)
+	output := buildGroupedOutput(grouped)
+	fmt.Print(output)
+}
+
+func groupIssuesByAnalyzer(issues []*models.Issue) []groupWithIssues {
+	analyzerGroups := getAnalyzerGroups()
+	grouped := make([]groupWithIssues, len(analyzerGroups))
+
+	// Use more conservative capacity estimation to avoid reallocations
+	estimatedCapacityPerGroup := (len(issues)/len(analyzerGroups) + 1) * 2
+	if estimatedCapacityPerGroup < 20 {
+		estimatedCapacityPerGroup = 20
+	}
+	for i, g := range analyzerGroups {
+		grouped[i] = groupWithIssues{
+			group:  g,
+			issues: make([]*models.Issue, 0, estimatedCapacityPerGroup),
+		}
+	}
+
+	// Group issues by analyzer type
+	for _, issue := range issues {
+		groupName := getAnalyzerGroup(issue.Type)
+		for i := range grouped {
+			if grouped[i].group.Name == groupName {
+				grouped[i].issues = append(grouped[i].issues, issue)
+				break
+			}
+		}
+	}
+
+	// Sort issues within each group: first by severity (HIGH, MEDIUM, LOW), then by PVE code
+	for i := range grouped {
+		sort.Slice(grouped[i].issues, func(a, b int) bool {
+			issueA := grouped[i].issues[a]
+			issueB := grouped[i].issues[b]
+
+			// First sort by severity: HIGH first, then MEDIUM, then LOW
+			if issueA.Severity != issueB.Severity {
+				return issueA.Severity > issueB.Severity
+			}
+
+			// Then sort by PVE code (issue type number)
+			return issueA.Type < issueB.Type
+		})
+	}
+
+	return grouped
+}
+
+func buildGroupedOutput(grouped []groupWithIssues) string {
+	var sb strings.Builder
+	// Estimate size based on number of issues
+	totalIssues := 0
+	for _, g := range grouped {
+		totalIssues += len(g.issues)
+	}
+	sb.Grow(totalIssues * 200)
+
+	for _, g := range grouped {
+		if len(g.issues) == 0 {
+			continue
+		}
+		addGroupHeader(&sb, &g)
+		addGroupIssues(&sb, g.issues)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func addGroupHeader(sb *strings.Builder, g *groupWithIssues) {
+	sb.WriteString(g.group.Icon)
+	sb.WriteString(" ")
+	sb.WriteString(g.group.Name)
+	sb.WriteString(" (")
+	sb.WriteString(strconv.Itoa(len(g.issues)))
+	sb.WriteString(" issues):\n")
+	sb.WriteString(strings.Repeat("─", 50) + "\n")
+}
+
+func addGroupIssues(sb *strings.Builder, issues []*models.Issue) {
+	for _, issue := range issues {
+		severityIcon := getSeverityIcon(issue.Severity)
+		sb.WriteString("\t")
+		sb.WriteString(severityIcon)
+		sb.WriteString(" ")
+		sb.WriteString(issue.Position.Filename)
+		sb.WriteString(":")
+		sb.WriteString(strconv.Itoa(issue.Position.Line))
+		sb.WriteString(":")
+		sb.WriteString(strconv.Itoa(issue.Position.Column))
+		sb.WriteString(" [")
+		sb.WriteString(issue.Type.GetPVEID())
+		sb.WriteString("]\n")
+		sb.WriteString("\t\t")
+		sb.WriteString(issue.Message)
+		sb.WriteString("\n")
+		if issue.Suggestion != "" {
+			sb.WriteString("\t\t")
+			sb.WriteString(issue.Suggestion)
+			sb.WriteString("\n")
+		}
+	}
+}
+
+func printCompactIssues(issues []*models.Issue) {
+	// Sort issues: first by severity (HIGH, MEDIUM, LOW), then by PVE code
+	sort.Slice(issues, func(i, j int) bool {
+		// First sort by severity: HIGH first, then MEDIUM, then LOW
+		if issues[i].Severity != issues[j].Severity {
+			return issues[i].Severity > issues[j].Severity
+		}
+
+		// Then sort by PVE code (issue type number)
+		return issues[i].Type < issues[j].Type
+	})
+
+	// Compact mode: one line per issue, IDE-clickable format
+	var sb strings.Builder
+	sb.Grow(len(issues) * 150) // Pre-allocate
+
+	for _, issue := range issues {
+		severityIcon := getSeverityIcon(issue.Severity)
+		// Standard compiler error format that all IDEs understand
+		sb.WriteString(
+			fmt.Sprintf(
+				"%s:%d:%d: %s [%s] %s - %s\n",
+				issue.Position.Filename, issue.Position.Line, issue.Position.Column,
+				severityIcon, issue.Type, issue.Message, issue.Suggestion,
+			),
+		)
+	}
+	fmt.Print(sb.String())
+}
+
+func analyzeFile(filename string, config *Config) []*models.Issue {
 	if config == nil {
 		return nil
 	}
@@ -499,15 +645,13 @@ func analyzeFile(filename string, config *Config) []*analyzer.Issue {
 	return allIssues
 }
 
-func getSeverityIcon(severity analyzer.SeverityLevel) string {
+func getSeverityIcon(severity models.SeverityLevel) string {
 	switch severity {
-	case analyzer.SeverityLevelCritical:
-		return "🚨"
-	case analyzer.SeverityLevelHigh:
+	case models.SeverityLevelHigh:
 		return "🔴"
-	case analyzer.SeverityLevelMedium:
+	case models.SeverityLevelMedium:
 		return "🟡"
-	case analyzer.SeverityLevelLow:
+	case models.SeverityLevelLow:
 		return "🟢"
 	default:
 		return "⚪"
@@ -517,7 +661,7 @@ func getSeverityIcon(severity analyzer.SeverityLevel) string {
 type analyzerGroup struct {
 	Name  string
 	Icon  string
-	Types []analyzer.IssueType
+	Types []models.IssueType
 }
 
 func getAnalyzerGroups() []analyzerGroup {
@@ -548,11 +692,15 @@ func getMemoryGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Memory & GC",
 		Icon: "💾",
-		Types: []analyzer.IssueType{
-			analyzer.IssueMemoryLeak, analyzer.IssueGlobalVar, analyzer.IssueLargeAllocation, analyzer.IssueHighGCPressure,
-			analyzer.IssueFrequentAllocation, analyzer.IssueLargeHeapAlloc, analyzer.IssuePointerHeavyStruct,
-			analyzer.IssueSliceCapacity, analyzer.IssueSliceCopy, analyzer.IssueSliceAppend, analyzer.IssueSliceRangeCopy,
-			analyzer.IssueMapCapacity, analyzer.IssueMapClear, analyzer.IssueInterfaceAllocation, analyzer.IssueEmptyInterface,
+		Types: []models.IssueType{
+			models.IssueMemoryLeak, models.IssueGlobalVar, models.IssueLargeAllocation, models.IssueHighGCPressure,
+			models.IssueFrequentAllocation, models.IssueLargeHeapAlloc, models.IssuePointerHeavyStruct,
+			models.IssueSliceCapacity, models.IssueSliceCopy, models.IssueSliceAppend, models.IssueSliceRangeCopy,
+			models.IssueMapCapacity, models.IssueMapClear, models.IssueInterfaceAllocation, models.IssueEmptyInterface,
+			models.IssueStructLayoutUnoptimized, models.IssueStructLargePadding, models.IssueStructFieldAlignment,
+			models.IssueCacheFalseSharing, models.IssueCacheLineWaste, models.IssueCacheLineAlignment,
+			models.IssueOversizedType, models.IssueUnspecificIntType, models.IssueSoAPattern,
+			models.IssueNestedRangeCache, models.IssueMapRangeCache,
 		},
 	}
 }
@@ -561,12 +709,12 @@ func getConcurrencyGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Concurrency & Race Conditions",
 		Icon: "🔄",
-		Types: []analyzer.IssueType{
-			analyzer.IssueRaceCondition, analyzer.IssueRaceConditionGlobal, analyzer.IssueUnsyncMapAccess, analyzer.IssueRaceClosure,
-			analyzer.IssueGoroutineLeak, analyzer.IssueUnbufferedChannel, analyzer.IssueGoroutineOverhead, analyzer.IssueSyncMutexValue,
-			analyzer.IssueWaitgroupMisuse, analyzer.IssueRaceInDefer, analyzer.IssueAtomicMisuse, analyzer.IssueGoroutinePerRequest,
-			analyzer.IssueNoWorkerPool, analyzer.IssueUnbufferedSignalChan, analyzer.IssueSelectDefault, analyzer.IssueChannelSize,
-			analyzer.IssueRangeOverChannel,
+		Types: []models.IssueType{
+			models.IssueRaceCondition, models.IssueRaceConditionGlobal, models.IssueUnsyncMapAccess, models.IssueRaceClosure,
+			models.IssueGoroutineLeak, models.IssueUnbufferedChannel, models.IssueGoroutineOverhead, models.IssueSyncMutexValue,
+			models.IssueWaitgroupMisuse, models.IssueRaceInDefer, models.IssueAtomicMisuse, models.IssueGoroutinePerRequest,
+			models.IssueNoWorkerPool, models.IssueUnbufferedSignalChan, models.IssueSelectDefault, models.IssueChannelSize,
+			models.IssueRangeOverChannel,
 		},
 	}
 }
@@ -575,13 +723,13 @@ func getPerformanceGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Performance Hotspots",
 		Icon: "🔥",
-		Types: []analyzer.IssueType{
-			analyzer.IssueAllocInLoop, analyzer.IssueNestedLoop, analyzer.IssueStringConcatInLoop, analyzer.IssueAppendInLoop,
-			analyzer.IssueDeferInLoop, analyzer.IssueRegexInLoop, analyzer.IssueTimeInLoop, analyzer.IssueSQLInLoop,
-			analyzer.IssueDNSInLoop,
-			analyzer.IssueReflectionInLoop, analyzer.IssueCPUIntensiveLoop, analyzer.IssueUnnecessaryCopy,
-			analyzer.IssueBoundsCheckElimination,
-			analyzer.IssueInefficientAlgorithm, analyzer.IssueCacheUnfriendly,
+		Types: []models.IssueType{
+			models.IssueAllocInLoop, models.IssueNestedLoop, models.IssueAppendInLoop,
+			models.IssueDeferInLoop, models.IssueRegexInLoop, models.IssueTimeInLoop, models.IssueSQLInLoop,
+			models.IssueDNSInLoop,
+			models.IssueReflectionInLoop, models.IssueCPUIntensiveLoop, models.IssueUnnecessaryCopy,
+			models.IssueBoundsCheckElimination,
+			models.IssueInefficientAlgorithm, models.IssueCacheUnfriendly,
 		},
 	}
 }
@@ -590,11 +738,11 @@ func getDeferGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Defer Optimization",
 		Icon: "⏰",
-		Types: []analyzer.IssueType{
-			analyzer.IssueDeferInShortFunc, analyzer.IssueDeferOverhead, analyzer.IssueUnnecessaryDefer, analyzer.IssueDeferAtEnd,
-			analyzer.IssueMultipleDefers, analyzer.IssueDeferInHotPath, analyzer.IssueDeferLargeCapture,
-			analyzer.IssueUnnecessaryMutexDefer,
-			analyzer.IssueMissingDeferUnlock, analyzer.IssueMissingDeferClose,
+		Types: []models.IssueType{
+			models.IssueDeferInShortFunc, models.IssueDeferOverhead, models.IssueUnnecessaryDefer, models.IssueDeferAtEnd,
+			models.IssueMultipleDefers, models.IssueDeferInHotPath, models.IssueDeferLargeCapture,
+			models.IssueUnnecessaryMutexDefer,
+			models.IssueMissingDeferUnlock, models.IssueMissingDeferClose,
 		},
 	}
 }
@@ -603,7 +751,7 @@ func getStringGroup() analyzerGroup {
 	return analyzerGroup{
 		Name:  "String Operations",
 		Icon:  "📝",
-		Types: []analyzer.IssueType{analyzer.IssueStringConcat, analyzer.IssueStringBuilder},
+		Types: []models.IssueType{models.IssueStringConcat, models.IssueStringBuilder},
 	}
 }
 
@@ -611,7 +759,7 @@ func getReflectionGroup() analyzerGroup {
 	return analyzerGroup{
 		Name:  "Reflection & Interfaces",
 		Icon:  "🔍",
-		Types: []analyzer.IssueType{analyzer.IssueReflection, analyzer.IssueInterfacePollution},
+		Types: []models.IssueType{models.IssueReflection, models.IssueInterfacePollution},
 	}
 }
 
@@ -619,7 +767,7 @@ func getTimeRegexGroup() analyzerGroup {
 	return analyzerGroup{
 		Name:  "Time & Regex",
 		Icon:  "⏱️",
-		Types: []analyzer.IssueType{analyzer.IssueTimeAfterLeak, analyzer.IssueTimeFormat, analyzer.IssueRegexCompile},
+		Types: []models.IssueType{models.IssueTimeAfterLeak, models.IssueTimeFormat, models.IssueRegexCompile},
 	}
 }
 
@@ -627,9 +775,9 @@ func getNetworkGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Network & HTTP",
 		Icon: "🌐",
-		Types: []analyzer.IssueType{
-			analyzer.IssueHTTPNoTimeout, analyzer.IssueHTTPNoClose, analyzer.IssueHTTPDefaultClient, analyzer.IssueHTTPNoContext,
-			analyzer.IssueKeepaliveMissing, analyzer.IssueConnectionPool, analyzer.IssueNoReuseConnection,
+		Types: []models.IssueType{
+			models.IssueHTTPNoTimeout, models.IssueHTTPNoClose, models.IssueHTTPDefaultClient, models.IssueHTTPNoContext,
+			models.IssueKeepaliveMissing, models.IssueConnectionPool, models.IssueNoReuseConnection,
 		},
 	}
 }
@@ -638,7 +786,7 @@ func getDatabaseGroup() analyzerGroup {
 	return analyzerGroup{
 		Name:  "Database",
 		Icon:  "🗄️",
-		Types: []analyzer.IssueType{analyzer.IssueNoPreparedStmt, analyzer.IssueMissingDBClose},
+		Types: []models.IssueType{models.IssueNoPreparedStmt, models.IssueMissingDBClose},
 	}
 }
 
@@ -646,9 +794,9 @@ func getErrorGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Error Handling",
 		Icon: "⚠️",
-		Types: []analyzer.IssueType{
-			analyzer.IssueErrorIgnored, analyzer.IssueErrorCheckMissing, analyzer.IssuePanicRecover, analyzer.IssueErrorStringFormat,
-			analyzer.IssueNilCheck, analyzer.IssuePanicRisk, analyzer.IssueNilReturn, analyzer.IssuePanicInLibrary,
+		Types: []models.IssueType{
+			models.IssueErrorIgnored, models.IssueErrorCheckMissing, models.IssuePanicRecover, models.IssueErrorStringFormat,
+			models.IssuePanicRisk, models.IssuePanicInLibrary,
 		},
 	}
 }
@@ -657,11 +805,11 @@ func getQualityGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Code Quality",
 		Icon: "🎯",
-		Types: []analyzer.IssueType{
-			analyzer.IssueHighComplexityO3, analyzer.IssueHighComplexityO2,
-			analyzer.IssuePointerToSlice, analyzer.IssueUselessCondition, analyzer.IssueEmptyElse,
-			analyzer.IssueSleepInsteadOfSync, analyzer.IssueConsoleLogDebugging,
-			analyzer.IssueHardcodedConfig, analyzer.IssuePanicInLibrary, analyzer.IssueGlobalVariable,
+		Types: []models.IssueType{
+			models.IssueHighComplexityO3, models.IssueHighComplexityO2,
+			models.IssuePointerToSlice, models.IssueUselessCondition, models.IssueEmptyElse,
+			models.IssueSleepInsteadOfSync, models.IssueConsoleLogDebugging,
+			models.IssueHardcodedConfig, models.IssuePanicInLibrary, models.IssueGlobalVariable,
 		},
 	}
 }
@@ -670,10 +818,10 @@ func getContextGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Context & API",
 		Icon: "⚡",
-		Types: []analyzer.IssueType{
-			analyzer.IssueContextBackground, analyzer.IssueContextValue, analyzer.IssueMissingContextCancel, analyzer.IssueContextLeak,
-			analyzer.IssueContextInStruct, analyzer.IssueContextNotFirst, analyzer.IssueSyncPoolMisuse, analyzer.IssueContextMisuse,
-			analyzer.IssueWGMisuse,
+		Types: []models.IssueType{
+			models.IssueContextBackground, models.IssueContextValue, models.IssueMissingContextCancel, models.IssueContextLeak,
+			models.IssueContextInStruct, models.IssueContextNotFirst, models.IssueSyncPoolMisuse, models.IssueContextMisuse,
+			models.IssueWGMisuse,
 		},
 	}
 }
@@ -682,8 +830,8 @@ func getOptimizationGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Optimization Opportunities",
 		Icon: "💡",
-		Types: []analyzer.IssueType{
-			analyzer.IssueSyncPoolOpportunity, analyzer.IssueSyncPoolPutMissing, analyzer.IssueSyncPoolTypeAssert,
+		Types: []models.IssueType{
+			models.IssueSyncPoolOpportunity, models.IssueSyncPoolPutMissing, models.IssueSyncPoolTypeAssert,
 		},
 	}
 }
@@ -692,10 +840,10 @@ func getTestGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Test Coverage",
 		Icon: "🧪",
-		Types: []analyzer.IssueType{
-			analyzer.IssueMissingTest, analyzer.IssueMissingExample, analyzer.IssueMissingBenchmark, analyzer.IssueUntestedExport,
-			analyzer.IssueUntestedType, analyzer.IssueUntestedError, analyzer.IssueUntestedConcurrency,
-			analyzer.IssueUntestedIOFunction,
+		Types: []models.IssueType{
+			models.IssueMissingTest, models.IssueMissingExample, models.IssueMissingBenchmark, models.IssueUntestedExport,
+			models.IssueUntestedType, models.IssueUntestedError, models.IssueUntestedConcurrency,
+			models.IssueUntestedIOFunction,
 		},
 	}
 }
@@ -704,11 +852,11 @@ func getPrivacyGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Privacy & Security",
 		Icon: "🔒",
-		Types: []analyzer.IssueType{
-			analyzer.IssuePrivacyHardcodedSecret, analyzer.IssuePrivacyAWSKey, analyzer.IssuePrivacyJWTToken,
-			analyzer.IssuePrivacyEmailPII, analyzer.IssuePrivacySSNPII, analyzer.IssuePrivacyCreditCardPII,
-			analyzer.IssuePrivacyLoggingSensitive, analyzer.IssuePrivacyPrintingSensitive, analyzer.IssuePrivacyExposedField,
-			analyzer.IssuePrivacyUnencryptedDBWrite, analyzer.IssuePrivacyDirectInputToDB,
+		Types: []models.IssueType{
+			models.IssuePrivacyHardcodedSecret, models.IssuePrivacyAWSKey, models.IssuePrivacyJWTToken,
+			models.IssuePrivacyEmailPII, models.IssuePrivacySSNPII, models.IssuePrivacyCreditCardPII,
+			models.IssuePrivacyLoggingSensitive, models.IssuePrivacyPrintingSensitive, models.IssuePrivacyExposedField,
+			models.IssuePrivacyUnencryptedDBWrite, models.IssuePrivacyDirectInputToDB,
 		},
 	}
 }
@@ -717,12 +865,12 @@ func getDependenciesGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "Dependencies",
 		Icon: "📦",
-		Types: []analyzer.IssueType{
-			analyzer.IssueDependencyDeprecated, analyzer.IssueDependencyVulnerable, analyzer.IssueDependencyOutdated,
-			analyzer.IssueDependencyCGO, analyzer.IssueDependencyUnsafe, analyzer.IssueDependencyInternal,
-			analyzer.IssueDependencyIndirect,
-			analyzer.IssueDependencyLocalReplace, analyzer.IssueDependencyNoChecksum, analyzer.IssueDependencyEmptyChecksum,
-			analyzer.IssueDependencyVersionConflict,
+		Types: []models.IssueType{
+			models.IssueDependencyDeprecated, models.IssueDependencyVulnerable, models.IssueDependencyOutdated,
+			models.IssueDependencyCGO, models.IssueDependencyUnsafe, models.IssueDependencyInternal,
+			models.IssueDependencyIndirect,
+			models.IssueDependencyLocalReplace, models.IssueDependencyNoChecksum, models.IssueDependencyEmptyChecksum,
+			models.IssueDependencyVersionConflict,
 		},
 	}
 }
@@ -731,7 +879,7 @@ func getOtherGroup() analyzerGroup {
 	return analyzerGroup{
 		Name:  "Other",
 		Icon:  "📌",
-		Types: []analyzer.IssueType{}, // Catches any uncategorized issues
+		Types: []models.IssueType{}, // Catches any uncategorized issues
 	}
 }
 
@@ -739,17 +887,17 @@ func getAIGroup() analyzerGroup {
 	return analyzerGroup{
 		Name: "AI Bullshit Detection",
 		Icon: "🤖",
-		Types: []analyzer.IssueType{
-			analyzer.IssueAIBullshitConcurrency, analyzer.IssueAIReflectionOverkill, analyzer.IssueAIPatternAbuse,
-			analyzer.IssueAIEnterpriseHelloWorld, analyzer.IssueAICaptainObvious, analyzer.IssueAIOverengineeredSimple,
-			analyzer.IssueAIGeneratedComment, analyzer.IssueAIUnnecessaryComplexity, analyzer.IssueAIVariable,
-			analyzer.IssueAIErrorHandling,
-			analyzer.IssueAIStructure, analyzer.IssueAIRepetition, analyzer.IssueAIFactorySimple, analyzer.IssueAIRedundantElse,
+		Types: []models.IssueType{
+			models.IssueAIBullshitConcurrency, models.IssueAIReflectionOverkill, models.IssueAIPatternAbuse,
+			models.IssueAIEnterpriseHelloWorld, models.IssueAICaptainObvious, models.IssueAIOverengineeredSimple,
+			models.IssueAIGeneratedComment, models.IssueAIUnnecessaryComplexity, models.IssueAIVariable,
+			models.IssueAIErrorHandling,
+			models.IssueAIStructure, models.IssueAIRepetition, models.IssueAIFactorySimple, models.IssueAIRedundantElse,
 		},
 	}
 }
 
-func getAnalyzerGroup(issueType analyzer.IssueType) string {
+func getAnalyzerGroup(issueType models.IssueType) string {
 	groups := getAnalyzerGroups()
 	for _, group := range groups {
 		for _, t := range group.Types {
@@ -761,14 +909,14 @@ func getAnalyzerGroup(issueType analyzer.IssueType) string {
 	return "Other" // Default group for uncategorized issues
 }
 
-func countBySeverity(issues []*analyzer.Issue) (high, medium, low int) {
+func countBySeverity(issues []*models.Issue) (high, medium, low int) {
 	for _, issue := range issues {
 		switch issue.Severity {
-		case analyzer.SeverityLevelCritical, analyzer.SeverityLevelHigh:
+		case models.SeverityLevelHigh:
 			high++
-		case analyzer.SeverityLevelMedium:
+		case models.SeverityLevelMedium:
 			medium++
-		case analyzer.SeverityLevelLow:
+		case models.SeverityLevelLow:
 			low++
 		}
 	}
@@ -791,8 +939,8 @@ func createDefaultConfig() {
 		slog.Error("Failed to write config file", "error", err)
 	}
 
-	fmt.Printf("✅ Created default configuration file: %s\n", configFile)
-	fmt.Println("📝 Edit this file to customize your analysis settings")
+	fmt.Printf("Created default configuration file: %s\n", configFile)
+	fmt.Println("\tEdit this file to customize your analysis settings")
 	fmt.Println("")
 	fmt.Println("Example usage:")
 	fmt.Println("  aibscleaner --config=.aibscleaner.yaml .")

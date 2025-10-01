@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type InterfaceAnalyzer struct{}
@@ -12,89 +14,93 @@ func NewInterfaceAnalyzer() Analyzer {
 }
 
 func (ia *InterfaceAnalyzer) Name() string {
-	return "InterfaceAnalyzer"
+	return "Interface Allocation"
 }
 
-func (ia *InterfaceAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (ia *InterfaceAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.TypeAssertExpr:
-				if node.Type == nil {
-					if ia.isInLoop(n) {
-						pos := fset.Position(node.Pos())
-						issues = append(
-							issues, &Issue{
-								File:       filename,
-								Line:       pos.Line,
-								Column:     pos.Column,
-								Position:   pos,
-								Type:       IssueInterfaceAllocation,
-								Severity:   SeverityLevelMedium,
-								Message:    "Type assertion in loop has performance overhead",
-								Suggestion: "Cache type assertion result outside loop if possible",
-							},
-						)
-					}
-				}
-			case *ast.CallExpr:
-				if ia.isEmptyInterfaceParam(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueInterfaceAllocation,
-							Severity:   SeverityLevelLow,
-							Message:    "interface{} parameter causes allocation and type checking overhead",
-							Suggestion: "Use concrete types or specific interfaces when possible",
-						},
-					)
-				}
-			}
-			return true
-		},
-	)
+	visitor := &interfaceVisitor{
+		fset:      fset,
+		filename:  filename,
+		loopDepth: 0,
+		issues:    make([]*models.Issue, 0, 4),
+	}
 
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-func (ia *InterfaceAnalyzer) isInLoop(node ast.Node) bool {
-	parent := node
-	depth := 0
-	maxDepth := MaxSearchDepth
-
-	for depth < maxDepth {
-		switch parent.(type) {
-		case *ast.ForStmt, *ast.RangeStmt:
-			return true
-		}
-		depth++
-	}
-
-	return false
+type interfaceVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
 }
 
-func (ia *InterfaceAnalyzer) isEmptyInterfaceParam(call *ast.CallExpr) bool {
-	for _, arg := range call.Args {
-		if _, ok := arg.(*ast.InterfaceType); ok {
-			return true
+func (v *interfaceVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
 		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.TypeAssertExpr:
+		v.checkTypeAssert(n)
+	case *ast.CompositeLit:
+		v.checkInterfaceLiteral(n)
 	}
-	return false
+	return v
+}
+
+func (v *interfaceVisitor) checkTypeAssert(assert *ast.TypeAssertExpr) {
+	if v.loopDepth == 0 {
+		return
+	}
+	pos := v.fset.Position(assert.Pos())
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       models.IssueInterfaceAllocation,
+		Severity:   models.SeverityLevelLow,
+		Message:    "Type assertion in loop causes interface allocations",
+		Suggestion: "Cache type assertion result outside loop",
+	})
+}
+
+func (v *interfaceVisitor) checkInterfaceLiteral(lit *ast.CompositeLit) {
+	_, ok := lit.Type.(*ast.InterfaceType)
+	if !ok {
+		return
+	}
+	pos := v.fset.Position(lit.Pos())
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       models.IssueInterfaceAllocation,
+		Severity:   models.SeverityLevelLow,
+		Message:    "anonymous interface literal may allocate per use",
+		Suggestion: "Define interface type once and reuse",
+	})
 }

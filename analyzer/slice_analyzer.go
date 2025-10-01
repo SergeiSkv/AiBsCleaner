@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type SliceAnalyzer struct{}
@@ -12,116 +14,79 @@ func NewSliceAnalyzer() Analyzer {
 }
 
 func (sa *SliceAnalyzer) Name() string {
-	return "SliceAnalyzer"
+	return "Slice Optimization"
 }
 
-func (sa *SliceAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	issues := make([]*Issue, 0, 10) // Pre-allocate for common case
-
-	astNode, ok := node.(ast.Node)
+func (sa *SliceAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Use context helper for proper loop detection
-	ctx := NewAnalyzerWithContext(astNode)
+	visitor := &sliceVisitor{
+		fset:      fset,
+		filename:  filename,
+		loopDepth: 0,
+		issues:    make([]*models.Issue, 0, 8),
+	}
 
-	// Pre-size map for visited nodes to avoid rehashing
-	visited := make(map[ast.Node]bool, 100)
-
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			// Skip if already visited
-			if visited[n] {
-				return false
-			}
-			visited[n] = true
-
-			callExpr, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-
-			ident, ok := callExpr.Fun.(*ast.Ident)
-			if !ok {
-				return true
-			}
-
-			switch ident.Name {
-			case "append":
-				// Check if this append call is in a loop
-				loopDepth := ctx.GetNodeLoopDepth(callExpr)
-				if loopDepth > 0 {
-					pos := fset.Position(callExpr.Pos())
-					severity := SeverityLevelMedium
-					if loopDepth > 1 {
-						severity = SeverityLevelHigh
-					}
-
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueSliceCapacity,
-							Severity:   severity,
-							Message:    "Multiple append calls in loop may cause excessive memory allocations",
-							Suggestion: "Pre-allocate slice with make([]T, 0, expectedSize) if size is known",
-							WhyBad: `append() in loops causes repeated allocations:
-• Slice capacity doubles each time: 0→1→2→4→8→16...
-• Previous data must be copied to new backing array
-• O(n) copy operations for n appends = O(n²) total
-• GC pressure from temporary slices
-IMPACT: Can cause 10-100x slowdown vs pre-allocated slice
-BETTER: make([]T, 0, knownCapacity) before loop`,
-						},
-					)
-				}
-			case funcMake:
-				// Check for slice creation without capacity
-				if sa.isMakeWithoutCapacity(callExpr) {
-					pos := fset.Position(callExpr.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueSliceCapacity,
-							Severity:   SeverityLevelLow,
-							Message:    "Slice created without capacity hint may require reallocations",
-							Suggestion: "Specify capacity if known: make([]T, 0, capacity)",
-							WhyBad:     "Without capacity hint, slice may need multiple reallocations as it grows",
-						},
-					)
-				}
-			}
-			return true
-		},
-	)
-
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-// This method is kept for compatibility but not used
-// 	// This method is deprecated in favor of context-based detection
-// }
+type sliceVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
+}
 
-func (sa *SliceAnalyzer) isMakeWithoutCapacity(call *ast.CallExpr) bool {
-	if len(call.Args) < 1 {
-		return false
+func (v *sliceVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.CallExpr:
+		v.inspectCall(n)
+	}
+	return v
+}
+
+func (v *sliceVisitor) inspectCall(call *ast.CallExpr) {
+	if v.loopDepth == 0 {
+		return
 	}
 
-	if _, ok := call.Args[0].(*ast.ArrayType); ok {
-		return len(call.Args) < 3
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != "append" {
+		return
 	}
 
-	return false
+	pos := v.fset.Position(call.Pos())
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       models.IssueSliceCapacity,
+		Severity:   models.SeverityLevelMedium,
+		Message:    "append inside loop may cause repeated allocations",
+		Suggestion: "Preallocate slice capacity or reuse a buffer",
+	})
 }

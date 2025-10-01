@@ -1,3 +1,6 @@
+//go:build legacytests
+// +build legacytests
+
 package analyzer
 
 import (

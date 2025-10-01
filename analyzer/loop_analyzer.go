@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type LoopAnalyzer struct{}
@@ -12,132 +14,71 @@ func NewLoopAnalyzer() Analyzer {
 }
 
 func (la *LoopAnalyzer) Name() string {
-	return "LoopAnalyzer"
+	return "Loop Performance"
 }
 
-func (la *LoopAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (la *LoopAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Create context for loop detection
-	ctx := NewAnalyzerWithContext(astNode)
-
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.DeferStmt:
-				// Check if defer is inside a loop
-				if ctx.IsNodeInLoop(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueDeferInLoop,
-							Severity:   SeverityLevelHigh,
-							Message:    "defer statement inside loop can cause memory buildup",
-							Suggestion: "Move defer outside the loop or avoid using defer in loops",
-						},
-					)
-				}
-			case *ast.RangeStmt:
-				if la.checkStringRangeLoop(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueStringConcatInLoop,
-							Severity:   SeverityLevelMedium,
-							Message:    "Ranging over string converts it to []rune which allocates memory",
-							Suggestion: "Consider using for i := 0; i < len(str); i++ if you don't need Unicode support",
-						},
-					)
-				}
-				// Check for defer in range loop body
-				issues = append(issues, la.checkLoopBody(node.Body, filename, fset, ctx)...)
-			case *ast.ForStmt:
-				if la.checkNestedLoopAllocation(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueStringConcatInLoop,
-							Severity:   SeverityLevelHigh,
-							Message:    "Memory allocation inside nested loop detected",
-							Suggestion: "Pre-allocate memory outside the loop or use object pooling",
-						},
-					)
-				}
-				// Check for defer in for loop body
-				if node.Body != nil {
-					issues = append(issues, la.checkLoopBody(node.Body, filename, fset, ctx)...)
-				}
-			}
-			return true
-		},
-	)
-
-	return issues
-}
-
-func (la *LoopAnalyzer) checkStringRangeLoop(stmt *ast.RangeStmt) bool {
-	// Only flag literal strings, not variables (we don't have type info)
-	if basicLit, ok := stmt.X.(*ast.BasicLit); ok {
-		return basicLit.Kind == token.STRING
+	visitor := &loopVisitor{
+		fset:     fset,
+		filename: filename,
+		issues:   make([]*models.Issue, 0, 8),
 	}
-	// Don't flag variables without type information to avoid false positives
-	return false
+
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-func (la *LoopAnalyzer) checkNestedLoopAllocation(stmt *ast.ForStmt) bool {
-	hasNestedLoop := false
-	hasAllocation := false
-
-	ast.Inspect(
-		stmt.Body, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.ForStmt:
-				hasNestedLoop = true
-			case *ast.RangeStmt:
-				hasNestedLoop = true
-			case *ast.CompositeLit:
-				hasAllocation = true
-			case *ast.CallExpr:
-				if ident, ok := node.Fun.(*ast.Ident); ok {
-					if ident.Name == funcMake || ident.Name == funcAppend {
-						hasAllocation = true
-					}
-				}
-			}
-			return true
-		},
-	)
-
-	return hasNestedLoop && hasAllocation
+type loopVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
 }
 
-func (la *LoopAnalyzer) checkLoopBody(body *ast.BlockStmt, filename string, fset *token.FileSet, ctx *AnalyzerWithContext) []*Issue {
-	var issues []*Issue
-	// Additional checks can be added here for loop body
-	return issues
+func (v *loopVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.DeferStmt:
+		if v.loopDepth > 0 {
+			v.addIssue(n.Pos())
+		}
+	}
+	return v
 }
 
-// }
+func (v *loopVisitor) addIssue(pos token.Pos) {
+	position := v.fset.Position(pos)
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       position.Line,
+		Column:     position.Column,
+		Position:   position,
+		Type:       models.IssueDeferInLoop,
+		Severity:   models.SeverityLevelMedium,
+		Message:    "Defer inside loop runs every iteration",
+		Suggestion: "Move the defer outside loop or replace with explicit cleanup",
+	})
+}

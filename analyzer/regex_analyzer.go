@@ -3,7 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
-	"strings"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type RegexAnalyzer struct{}
@@ -13,125 +14,88 @@ func NewRegexAnalyzer() Analyzer {
 }
 
 func (ra *RegexAnalyzer) Name() string {
-	return "RegexAnalyzer"
+	return "Regex Performance"
 }
 
-func (ra *RegexAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (ra *RegexAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Use context helper for proper loop detection
-	ctx := NewAnalyzerWithContext(astNode)
+	visitor := &regexVisitor{
+		fset:      fset,
+		filename:  filename,
+		loopDepth: 0,
+		issues:    make([]*models.Issue, 0, 4),
+	}
 
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			callExpr, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-
-			// Check if this is a regex compilation call
-			if !ra.isRegexpCompile(callExpr) {
-				return true
-			}
-
-			// Check if this call is in a loop
-			loopDepth := ctx.GetNodeLoopDepth(callExpr)
-			inLoop := loopDepth > 0
-
-			if inLoop {
-				pos := fset.Position(callExpr.Pos())
-				severity := SeverityLevelMedium
-				if loopDepth > 1 {
-					severity = SeverityLevelHigh
-				}
-
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueRegexCompileInLoop,
-						Severity:   severity,
-						Message:    "Regular expression compiled inside loop - expensive operation",
-						Suggestion: "Compile regex once outside the loop and reuse the compiled pattern",
-						WhyBad: `Regex compilation in loops is expensive:
-• Pattern parsing: ~1-10μs per compile
-• DFA construction overhead
-• Memory allocation for state machines
-• No caching benefits
-IMPACT: 100-1000x slower than reusing compiled regex
-BETTER: var re = regexp.MustCompile(pattern) outside loop`,
-					},
-				)
-			}
-
-			// Also check for static patterns that should use MustCompile
-			if !inLoop && ra.isStaticPattern(callExpr) && ra.isCompileNotMustCompile(callExpr) {
-				pos := fset.Position(callExpr.Pos())
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueRegexCompileInFunc,
-						Severity:   SeverityLevelLow,
-						Message:    "regexp.Compile used instead of MustCompile for static pattern",
-						Suggestion: "Use regexp.MustCompile for compile-time validation of static patterns",
-						WhyBad:     "Static patterns should use MustCompile for early error detection and cleaner code",
-					},
-				)
-			}
-
-			return true
-		},
-	)
-
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-// Check if this is any regexp compile call
-func (ra *RegexAnalyzer) isRegexpCompile(call *ast.CallExpr) bool {
-	if selExpr, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if ident, ok := selExpr.X.(*ast.Ident); ok {
-			if ident.Name == pkgRegexp {
-				return strings.Contains(selExpr.Sel.Name, "Compile")
-			}
-		}
-	}
-	return false
+type regexVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
 }
 
-// Check if this uses Compile instead of MustCompile
-func (ra *RegexAnalyzer) isCompileNotMustCompile(call *ast.CallExpr) bool {
-	if selExpr, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if ident, ok := selExpr.X.(*ast.Ident); ok {
-			if ident.Name == pkgRegexp && selExpr.Sel.Name == "Compile" {
-				return true
-			}
+func (v *regexVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
 		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.CallExpr:
+		v.inspectCall(n)
 	}
-	return false
+	return v
 }
 
-// Check if this is a static pattern (string literal)
-func (ra *RegexAnalyzer) isStaticPattern(call *ast.CallExpr) bool {
-	if len(call.Args) > 0 {
-		if lit, ok := call.Args[0].(*ast.BasicLit); ok {
-			return lit.Kind == token.STRING
-		}
+func (v *regexVisitor) inspectCall(call *ast.CallExpr) {
+	if v.loopDepth == 0 {
+		return
 	}
-	return false
+
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != pkgRegexp {
+		return
+	}
+
+	if sel.Sel.Name != methodCompile && sel.Sel.Name != methodMustCompile {
+		return
+	}
+
+	pos := v.fset.Position(call.Pos())
+	v.issues = append(v.issues, &models.Issue{
+		File:       v.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       models.IssueRegexCompileInLoop,
+		Severity:   models.SeverityLevelMedium,
+		Message:    "Regular expression compiled inside loop",
+		Suggestion: "Compile regex once outside loop and reuse",
+	})
 }

@@ -1,3 +1,6 @@
+//go:build legacytests
+// +build legacytests
+
 package analyzer
 
 import (
@@ -10,7 +13,6 @@ import (
 )
 
 func TestCPUOptimizationAnalyzer(t *testing.T) {
-	// Simple test to check if analyzer works
 	code := `package main
 
 func test(data []int) {

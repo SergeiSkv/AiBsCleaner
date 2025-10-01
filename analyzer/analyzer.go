@@ -9,7 +9,13 @@ import (
 	"time"
 
 	"github.com/SergeiSkv/AiBsCleaner/cache"
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
+
+type Analyzer interface {
+	Name() string
+	Analyze(node interface{}, fset *token.FileSet) []*models.Issue
+}
 
 // AnalysisCache caches analysis results to avoid re-analyzing unchanged files
 type AnalysisCache struct {
@@ -18,20 +24,9 @@ type AnalysisCache struct {
 	maxAge  time.Duration
 }
 
-// Object pools for reducing allocations
-var (
-	issueSlicePool = sync.Pool{
-		New: func() interface{} {
-			// Return as interface{} for proper type assertion
-			s := make([]*Issue, 0, 20)
-			return &s
-		},
-	}
-)
-
 type CacheEntry struct {
 	Hash      string
-	Issues    []*Issue
+	Issues    []*models.Issue
 	Timestamp time.Time
 }
 
@@ -41,7 +36,7 @@ var (
 
 	// Legacy cache for compatibility
 	globalCache = &AnalysisCache{
-		results: make(map[string]CacheEntry),
+		results: make(map[string]CacheEntry, 100),
 		maxAge:  15 * time.Minute,
 	}
 )
@@ -57,38 +52,30 @@ func init() {
 }
 
 // AnalyzeAll is the main entry point for code analysis with caching support
-func AnalyzeAll(filename string, file *ast.File, fset *token.FileSet) []*Issue {
+func AnalyzeAll(filename string, file *ast.File, fset *token.FileSet) []*models.Issue {
 	return Analyze(filename, file, fset, nil)
 }
 
 // Analyze is the main entry point with configuration support
 func Analyze(
 	filename string, file *ast.File, fset *token.FileSet, enabledAnalyzers map[string]bool,
-) []*Issue {
+) []*models.Issue {
 	// Check for nil input
 	if file == nil {
-		return []*Issue{}
+		return []*models.Issue{}
 	}
+
+	// TEMPORARY DISABLE: Show real issues
+	// if isAnalyzerFile(filename) {
+	//	return []*models.Issue{}
+	// }
 
 	// Check cache first
 	if cachedIssues, ok := checkCache(filename, file); ok {
 		return cachedIssues
 	}
 
-	// Get issue slice from pool with type assertion check
-	poolItem := issueSlicePool.Get()
-	issuesPtr, ok := poolItem.(*[]*Issue)
-	if !ok {
-		// Fallback if type assertion fails
-		issues := make([]*Issue, 0, 20)
-		issuesPtr = &issues
-	}
-	issues := (*issuesPtr)[:0]
-	// Don't clear issues in defer - we're returning them!
-	// Just return the slice to pool for reuse
-	defer func() {
-		issueSlicePool.Put(issuesPtr)
-	}()
+	issues := make([]*models.Issue, 0, 32)
 
 	// Build list of analyzers to run based on configuration
 	type analyzerEntry struct {
@@ -113,7 +100,6 @@ func Analyze(
 		{"apimisuse", NewAPIMisuseAnalyzer},
 		{"aibullshit", NewAIBullshitAnalyzer},
 		{"goroutine", NewGoroutineAnalyzer},
-		{"nilptr", NewNilPtrAnalyzer},
 		{"channel", NewChannelAnalyzer},
 		{"httpclient", NewHTTPClientAnalyzer},
 		{"context", NewContextAnalyzer},
@@ -133,6 +119,12 @@ func Analyze(
 
 		// Security/privacy (specialized)
 		{"privacy", NewPrivacyAnalyzer},
+
+		// Struct layout optimization
+		{"structlayout", NewStructLayoutAnalyzer},
+
+		// CPU cache optimization
+		{"cpucache", NewCPUCacheAnalyzer},
 
 		// Testing (usually noisy, disabled by default in config)
 		{"testcoverage", NewTestCoverageAnalyzer},
@@ -158,28 +150,14 @@ func Analyze(
 	return issues
 }
 
-func checkCache(filename string, file *ast.File) ([]*Issue, bool) {
+func checkCache(filename string, file *ast.File) ([]*models.Issue, bool) {
 	hash := computeFileHash(file)
 
 	// Try hybrid cache first
 	if globalHybridCache != nil {
 		if entry, ok := globalHybridCache.Get(filename); ok {
 			if entry.Hash == hash {
-				// Convert cache.Issue back to analyzer.Issue
-				issues := make([]*Issue, len(entry.Issues))
-				for i, cacheIssue := range entry.Issues {
-					issueType, _ := IssueTypeString(cacheIssue.Type)
-					Severity, _ := SeverityLevelString(cacheIssue.Severity)
-					issues[i] = &Issue{
-						Type:       issueType,
-						Severity:   Severity,
-						Line:       cacheIssue.Line,
-						Column:     cacheIssue.Column,
-						Message:    cacheIssue.Message,
-						Suggestion: cacheIssue.Suggestion,
-					}
-				}
-				return issues, true
+				return cloneIssues(entry.Issues), true
 			}
 		}
 		return nil, false
@@ -198,30 +176,17 @@ func checkCache(filename string, file *ast.File) ([]*Issue, bool) {
 	return nil, false
 }
 
-func updateCache(filename string, file *ast.File, issues []*Issue) {
+func updateCache(filename string, file *ast.File, issues []*models.Issue) {
 	hash := computeFileHash(file)
 
 	// Use hybrid cache if available
 	if globalHybridCache != nil {
-		// Convert analyzer.Issue to cache.Issue
-		cacheIssues := make([]*cache.Issue, len(issues))
-		for i, issue := range issues {
-			cacheIssues[i] = &cache.Issue{
-				Type:       string(rune(issue.Type)),
-				Line:       issue.Line,
-				Column:     issue.Column,
-				Message:    issue.Message,
-				Severity:   string(issue.Severity),
-				Suggestion: issue.Suggestion,
-			}
-		}
 		globalHybridCache.Put(
 			filename, cache.Entry{
 				Hash:   hash,
-				Issues: cacheIssues,
+				Issues: cloneIssues(issues),
 			},
 		)
-		return
 	}
 
 	// Fallback to legacy cache
@@ -230,12 +195,28 @@ func updateCache(filename string, file *ast.File, issues []*Issue) {
 
 	globalCache.results[filename] = CacheEntry{
 		Hash:      hash,
-		Issues:    issues,
+		Issues:    cloneIssues(issues),
 		Timestamp: time.Now(),
 	}
 
 	// Clean old entries
 	cleanCache()
+}
+
+func cloneIssues(src []*models.Issue) []*models.Issue {
+	if len(src) == 0 {
+		return []*models.Issue{}
+	}
+
+	cloned := make([]*models.Issue, 0, len(src))
+	for _, issue := range src {
+		if issue == nil {
+			continue
+		}
+		issueCopy := *issue
+		cloned = append(cloned, &issueCopy)
+	}
+	return cloned
 }
 
 // Buffer pool for hash computation
@@ -249,17 +230,14 @@ var hashBufferPool = sync.Pool{
 func computeFileHash(file *ast.File) string {
 	h := fnv.New64a()
 	bufInterface := hashBufferPool.Get()
-	bufPtr, ok := bufInterface.(*[]byte)
-	var buf []byte
-	if ok && bufPtr != nil {
-		buf = *bufPtr
-	} else {
-		buf = make([]byte, 0, 256)
+	buf, ok := bufInterface.(*[]byte)
+	if !ok || buf == nil {
+		newBuf := make([]byte, 0, 256)
+		buf = &newBuf
 	}
-	buf = buf[:0]
+	*buf = (*buf)[:0]
 	defer func() {
-		b := buf[:0]
-		hashBufferPool.Put(&b)
+		hashBufferPool.Put(buf)
 	}()
 
 	nodeCount := 0
@@ -273,15 +251,15 @@ func computeFileHash(file *ast.File) string {
 			pos := n.Pos()
 			if pos != token.NoPos {
 				// Reuse buffer for position encoding
-				buf = strconv.AppendInt(buf[:0], int64(pos), 10)
-				h.Write(buf)
+				*buf = strconv.AppendInt((*buf)[:0], int64(pos), 10)
+				h.Write(*buf)
 			}
 			return true
 		},
 	)
 	// Add node count to hash
-	buf = strconv.AppendInt(buf[:0], int64(nodeCount), 10)
-	h.Write(buf)
+	*buf = strconv.AppendInt((*buf)[:0], int64(nodeCount), 10)
+	h.Write(*buf)
 	return strconv.FormatUint(h.Sum64(), 36) // Base36 for shorter string
 }
 
@@ -297,9 +275,9 @@ func cleanCache() {
 // WalkWithContext provides context-aware AST traversal
 func WalkWithContext(node ast.Node, fn func(n ast.Node, ctx *AnalysisContext) bool) {
 	ctx := &AnalysisContext{
-		Imports:   make(map[string]bool),
-		FuncDecls: make(map[string]*ast.FuncDecl),
-		TypeDecls: make(map[string]*ast.TypeSpec),
+		Imports:   make(map[string]bool, 20),
+		FuncDecls: make(map[string]*ast.FuncDecl, 50),
+		TypeDecls: make(map[string]*ast.TypeSpec, 20),
 	}
 
 	walkWithContext(node, ctx, fn)
@@ -404,24 +382,26 @@ func walkExpr(node ast.Node, ctx *AnalysisContext, fn func(n ast.Node, ctx *Anal
 
 // AnalysisContext provides shared context between analyzers
 type AnalysisContext struct {
-	Filename    string
-	FileSet     *token.FileSet
-	InLoop      bool
-	LoopDepth   int
-	CurrentFunc string
-
-	// Shared state to avoid redundant checks
+	// Performance metrics (8 bytes)
+	StartTime time.Time
+	// Pointer fields (8 bytes each)
+	FileSet *token.FileSet
+	// Map fields (8 bytes each)
 	Imports   map[string]bool
 	FuncDecls map[string]*ast.FuncDecl
 	TypeDecls map[string]*ast.TypeSpec
-
-	// Performance metrics
+	// String fields (16 bytes each)
+	Filename    string
+	CurrentFunc string
+	// Integer fields (8 bytes each)
+	LoopDepth int
 	NodeCount int
-	StartTime time.Time
+	// Boolean field (1 byte) - placed at end to minimize padding
+	InLoop bool
 }
 
 // AnalyzeDependencies runs dependency analysis once for the entire project
-func AnalyzeDependencies(projectPath string) []*Issue {
+func AnalyzeDependencies(projectPath string) []*models.Issue {
 	analyzer := NewDependencyAnalyzer(projectPath)
 	// Use an empty filename since this is project-level analysis
 	return analyzer.Analyze(nil, nil)

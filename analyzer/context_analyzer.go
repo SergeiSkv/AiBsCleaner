@@ -3,262 +3,133 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
-	"strings"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
-// ContextAnalyzer checks for context.Context misuse
-type ContextAnalyzer struct {
-	contextParams map[string]bool
-}
+type ContextAnalyzer struct{}
 
 func NewContextAnalyzer() Analyzer {
-	return &ContextAnalyzer{
-		contextParams: make(map[string]bool),
-	}
+	return &ContextAnalyzer{}
 }
 
 func (ca *ContextAnalyzer) Name() string {
 	return "ContextAnalyzer"
 }
 
-func (ca *ContextAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	astNode, ok := node.(ast.Node)
+func (ca *ContextAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	// Check all function declarations
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.FuncDecl:
-				issues = append(issues, ca.analyzeFuncContext(node, filename, fset)...)
-			case *ast.CallExpr:
-				issues = append(issues, ca.analyzeContextCall(node, filename, fset)...)
-			case *ast.GoStmt:
-				issues = append(issues, ca.analyzeGoroutineContext(node, filename, fset)...)
+	ctx := newContextAnalysis(fset, filename)
+	ast.Walk(&contextVisitor{ctx: ctx}, file)
+	return ctx.issues
+}
+
+type contextVisitor struct {
+	ctx *contextAnalysis
+}
+
+func (v *contextVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		return nil
+	}
+
+	switch n := node.(type) {
+	case *ast.FuncDecl:
+		v.ctx.inspectFunction(n)
+		return nil
+	case *ast.CallExpr:
+		v.ctx.inspectCall(n)
+	}
+
+	return v
+}
+
+type contextAnalysis struct {
+	fset     *token.FileSet
+	filename string
+	issues   []*models.Issue
+}
+
+func newContextAnalysis(fset *token.FileSet, filename string) *contextAnalysis {
+	return &contextAnalysis{
+		fset:     fset,
+		filename: filename,
+		issues:   make([]*models.Issue, 0, 8),
+	}
+}
+
+func (ca *contextAnalysis) inspectFunction(fn *ast.FuncDecl) {
+	if fn.Type == nil || fn.Type.Params == nil {
+		return
+	}
+
+	params := fn.Type.Params.List
+	for i, field := range params {
+		if field.Type == nil {
+			continue
+		}
+		if isContextType(field.Type) {
+			if i > 0 {
+				pos := ca.fset.Position(field.Pos())
+				ca.addIssue(pos, models.IssueContextNotFirst, "context.Context should be the first parameter")
 			}
-			return true
-		},
-	)
-
-	return issues
-}
-
-func (ca *ContextAnalyzer) analyzeFuncContext(fn *ast.FuncDecl, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	// Check context parameter position
-	issues = append(issues, ca.checkContextPosition(fn, filename, fset)...)
-
-	// Check for context.Background() or context.TODO() usage
-	issues = append(issues, ca.checkContextBackgroundUsage(fn, filename, fset)...)
-
-	return issues
-}
-
-func (ca *ContextAnalyzer) checkContextPosition(fn *ast.FuncDecl, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	if fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
-		return issues
-	}
-
-	hasContext := false
-	contextPosition := -1
-
-	for i, param := range fn.Type.Params.List {
-		if ca.isContextType(param.Type) {
-			hasContext = true
-			contextPosition = i
 			break
 		}
 	}
-
-	// Context should be the first parameter if present
-	if hasContext && contextPosition > 0 {
-		pos := fset.Position(fn.Type.Params.List[contextPosition].Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueContextNotFirst,
-				Severity:   SeverityLevelMedium,
-				Message:    "Context should be the first parameter",
-				Suggestion: "Move context.Context to be the first parameter",
-			},
-		)
-	}
-
-	// Store function parameters with context for later checks
-	if hasContext && fn.Name != nil {
-		ca.contextParams[fn.Name.Name] = true
-	}
-
-	return issues
 }
 
-func (ca *ContextAnalyzer) checkContextBackgroundUsage(fn *ast.FuncDecl, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	if fn.Body == nil || fn.Name == nil {
-		return issues
-	}
-
-	// Check for context.Background() or context.TODO() in production code
-	ast.Inspect(
-		fn.Body, func(n ast.Node) bool {
-			if issue := ca.checkBackgroundContext(n, fn, filename, fset); issue != nil {
-				issues = append(issues, issue)
-			}
-			return true
-		},
-	)
-
-	return issues
-}
-
-func (ca *ContextAnalyzer) analyzeContextCall(call *ast.CallExpr, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	// Check for context.WithValue with non-comparable keys
+func (ca *contextAnalysis) inspectCall(call *ast.CallExpr) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return issues
+		return
 	}
 
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || ident.Name != pkgContext || sel.Sel.Name != "WithValue" {
-		return issues
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != pkgContext {
+		return
 	}
 
+	if sel.Sel.Name != "WithValue" {
+		return
+	}
 	if len(call.Args) < 2 {
-		return issues
+		return
 	}
-
-	// Check if key is a string literal (bad practice)
-	lit, ok := call.Args[1].(*ast.BasicLit)
-	if ok && lit.Kind == token.STRING {
-		pos := fset.Position(lit.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueContextInStruct,
-				Severity:   SeverityLevelLow,
-				Message:    "Using string literal as context key can cause collisions",
-				Suggestion: "Define a custom type for context keys",
-			},
-		)
+	if _, ok := call.Args[1].(*ast.BasicLit); ok {
+		pos := ca.fset.Position(call.Args[1].Pos())
+		ca.addIssue(pos, models.IssueContextValue, "avoid using basic types as context keys")
 	}
-
-	// Check for missing cancel function call
-	// TODO: This would need more complex analysis to track if cancel is called
-	// For now, we can't easily detect if the result is ignored without parent tracking
-
-	return issues
 }
 
-func (ca *ContextAnalyzer) analyzeGoroutineContext(goStmt *ast.GoStmt, filename string, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	// Check if goroutine uses parent context
-	hasContext := false
-	ast.Inspect(
-		goStmt.Call, func(n ast.Node) bool {
-			if ident, ok := n.(*ast.Ident); ok {
-				if ident.Name == "ctx" || strings.Contains(ident.Name, "context") {
-					hasContext = true
-					return false
-				}
-			}
-			return true
-		},
-	)
-
-	if !hasContext {
-		// Check if the function being called expects context
-		if call, ok := goStmt.Call.Fun.(*ast.Ident); ok {
-			if ca.contextParams[call.Name] {
-				pos := fset.Position(goStmt.Pos())
-				issues = append(
-					issues, &Issue{
-						File:       filename,
-						Line:       pos.Line,
-						Column:     pos.Column,
-						Position:   pos,
-						Type:       IssueContextInStruct,
-						Severity:   SeverityLevelMedium,
-						Message:    "Goroutine started without passing context",
-						Suggestion: "Pass parent context to goroutine for proper cancellation",
-					},
-				)
-			}
-		}
-	}
-
-	return issues
+func (ca *contextAnalysis) addIssue(pos token.Position, issueType models.IssueType, msg string) {
+	ca.issues = append(ca.issues, &models.Issue{
+		File:     ca.filename,
+		Line:     pos.Line,
+		Column:   pos.Column,
+		Position: pos,
+		Type:     issueType,
+		Severity: issueType.Severity(),
+		Message:  msg,
+	})
 }
 
-func (ca *ContextAnalyzer) checkBackgroundContext(n ast.Node, fn *ast.FuncDecl, filename string, fset *token.FileSet) *Issue {
-	call, ok := n.(*ast.CallExpr)
+func isContextType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
-		return nil
-	}
-
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return nil
-	}
-
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || ident.Name != pkgContext {
-		return nil
-	}
-
-	if sel.Sel.Name != "Background" && sel.Sel.Name != "TODO" {
-		return nil
-	}
-
-	// Check if not in main or test function
-	if fn.Name.Name == "main" || strings.HasPrefix(fn.Name.Name, "Test") {
-		return nil
-	}
-
-	pos := fset.Position(call.Pos())
-	return &Issue{
-		File:       filename,
-		Line:       pos.Line,
-		Column:     pos.Column,
-		Position:   pos,
-		Type:       IssueContextBackgroundMisuse,
-		Severity:   SeverityLevelMedium,
-		Message:    "Avoid using context.Background() or context.TODO() in production code",
-		Suggestion: "Use context from parent function or request",
-	}
-}
-
-func (ca *ContextAnalyzer) isContextType(expr ast.Expr) bool {
-	switch t := expr.(type) {
-	case *ast.SelectorExpr:
-		if ident, ok := t.X.(*ast.Ident); ok {
-			return ident.Name == "context" && t.Sel.Name == "Context"
-		}
-	case *ast.InterfaceType:
-		// Check for embedded context.Context
 		return false
 	}
-	return false
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return pkgIdent.Name == pkgContext && sel.Sel.Name == "Context"
 }

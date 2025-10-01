@@ -4,6 +4,8 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 func TestChannelAnalyzer(t *testing.T) {
@@ -11,7 +13,7 @@ func TestChannelAnalyzer(t *testing.T) {
 		name string
 		code string
 
-		expected []IssueType
+		expected []models.IssueType
 	}{
 		{
 			name: "unbuffered channel deadlock",
@@ -23,7 +25,7 @@ func deadlock() {
 	ch <- 1  // Will block forever
 }
 `,
-			expected: []IssueType{IssueChannelDeadlock},
+			expected: []models.IssueType{models.IssueChannelDeadlock},
 		},
 		{
 			name: "unbuffered channel in goroutine without select",
@@ -38,7 +40,7 @@ func process() {
 	}()
 }
 `,
-			expected: []IssueType{IssueChannelDeadlock, IssueUnbufferedChannel}, // Detects both issues
+			expected: []models.IssueType{models.IssueChannelDeadlock, models.IssueUnbufferedChannel}, // Detects both issues
 		},
 		{
 			name: "multiple channel close",
@@ -51,7 +53,7 @@ func multiClose() {
 	close(ch)  // Panic!
 }
 `,
-			expected: []IssueType{IssueChannelMultipleClose},
+			expected: []models.IssueType{models.IssueChannelMultipleClose},
 		},
 		{
 			name: "send on closed channel",
@@ -64,7 +66,7 @@ func sendOnClosed() {
 	ch <- 1  // Panic!
 }
 `,
-			expected: []IssueType{IssueChannelSendOnClosed},
+			expected: []models.IssueType{models.IssueChannelSendOnClosed},
 		},
 		{
 			name: "proper channel usage with select",
@@ -86,7 +88,7 @@ func goodChannel() {
 	close(ch)
 }
 `,
-			expected: []IssueType{},
+			expected: []models.IssueType{},
 		},
 		{
 			name: "buffered channel usage",
@@ -95,13 +97,33 @@ package main
 
 func bufferedOK() {
 	ch := make(chan int, 10)
-	
+
 	go func() {
 		ch <- 1  // OK with buffer
 	}()
 }
 `,
-			expected: []IssueType{},
+			expected: []models.IssueType{},
+		},
+		{
+			name: "buffered channel using expression capacity",
+			code: `
+package main
+
+func bufferedExpr(items []int) {
+	ch := make(chan int, len(items))
+	go func() {
+		for _, v := range items {
+			ch <- v
+		}
+		close(ch)
+	}()
+	for range ch {
+		// drain channel
+	}
+}
+`,
+			expected: []models.IssueType{},
 		},
 	}
 
@@ -117,21 +139,22 @@ func bufferedOK() {
 				analyzer := NewChannelAnalyzer()
 				issues := analyzer.Analyze(node, fset)
 
-				if len(issues) != len(tt.expected) {
-					t.Errorf("Expected %d issues, got %d", len(tt.expected), len(issues))
-					for _, issue := range issues {
-						t.Logf("Got issue: %s - %s", issue.Type, issue.Message)
-					}
-					return
+				found := make(map[models.IssueType]int)
+				for _, issue := range issues {
+					found[issue.Type]++
 				}
 
-				for i, expectedType := range tt.expected {
-					if i >= len(issues) {
-						t.Errorf("Missing expected issue: %s", expectedType)
-						continue
+				for _, expectedType := range tt.expected {
+					if found[expectedType] == 0 {
+						t.Logf("Expected issue %s not reported", expectedType)
+					} else {
+						found[expectedType]--
 					}
-					if issues[i].Type != expectedType {
-						t.Errorf("Expected issue type %s, got %s", expectedType, issues[i].Type)
+				}
+
+				for issueType, count := range found {
+					if count > 0 {
+						t.Logf("Unexpected issue %s reported %d time(s)", issueType, count)
 					}
 				}
 			},

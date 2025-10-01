@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,12 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/SergeiSkv/AiBsCleaner/analyzer"
 	"github.com/SergeiSkv/AiBsCleaner/cache"
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 // loadCachedIssues attempts to load issues from cache
-func loadCachedIssues(filename string, cacheDB *cache.FileCache) ([]*analyzer.Issue, bool) {
+func loadCachedIssues(filename string, cacheDB *cache.FileCache) ([]*models.Issue, bool) {
 	if cacheDB == nil || noCache {
 		return nil, false
 	}
@@ -37,8 +38,8 @@ func loadCachedIssues(filename string, cacheDB *cache.FileCache) ([]*analyzer.Is
 }
 
 // reconstructIssuesFromCache converts database issues to analyzer issues
-func reconstructIssuesFromCache(filename string, record *cache.FileRecord) []*analyzer.Issue {
-	var cachedIssues []*analyzer.Issue
+func reconstructIssuesFromCache(filename string, record *cache.FileRecord) []*models.Issue {
+	var cachedIssues []*models.Issue
 
 	for _, dbIssue := range record.Issues {
 		if isIssueIgnored(dbIssue.ID, record.Ignored) {
@@ -65,20 +66,14 @@ func isIssueIgnored(issueID string, ignoredIDs []string) bool {
 }
 
 // convertDBIssueToAnalyzerIssue converts a database issue to an analyzer issue
-func convertDBIssueToAnalyzerIssue(filename string, dbIssue *cache.Issue) *analyzer.Issue {
-	issueType, err := analyzer.IssueTypeString(dbIssue.Type)
-	if err != nil {
-		slog.Warn("Invalid issue type in cache", "type", dbIssue.Type, "error", err)
-		return nil
-	}
-
-	return &analyzer.Issue{
+func convertDBIssueToAnalyzerIssue(filename string, dbIssue *models.Issue) *models.Issue {
+	return &models.Issue{
 		File:       filename,
 		Line:       dbIssue.Line,
 		Column:     dbIssue.Column,
-		Type:       issueType,
+		Type:       dbIssue.Type,
 		Message:    dbIssue.Message,
-		Severity:   analyzer.SeverityLevelMedium, // Default severity
+		Severity:   models.SeverityLevelMedium, // Default severity
 		Suggestion: dbIssue.Suggestion,
 		CanBeFixed: dbIssue.CanBeFixed,
 		Position: token.Position{
@@ -140,7 +135,6 @@ func getAnalyzerMapping() map[string]string {
 		"apimisuse":           "apimisuse",
 		"aibullshit":          "aibullshit",
 		"goroutine":           "goroutine",
-		"nilptr":              "nilptr",
 		"channel":             "channel",
 		"httpclient":          "httpclient",
 		"context":             "context",
@@ -157,11 +151,13 @@ func getAnalyzerMapping() map[string]string {
 		"iobuffer":            "iobuffer",
 		"privacy":             "privacy",
 		"testcoverage":        "testcoverage",
+		"structlayout":        "structlayout",
+		"cpucache":            "cpucache",
 	}
 }
 
 // saveToCacheDB saves issues to the cache database
-func saveToCacheDB(filename string, issues []*analyzer.Issue, cacheDB *cache.FileCache) {
+func saveToCacheDB(filename string, issues []*models.Issue, cacheDB *cache.FileCache) {
 	if cacheDB == nil || noCache {
 		return
 	}
@@ -216,11 +212,29 @@ func isGoFile(path string, info os.FileInfo) bool {
 	return !info.IsDir() && strings.HasSuffix(path, ".go")
 }
 
-// countLines counts the number of lines in a file
+// countLines counts the number of lines in a file using streaming for better memory efficiency
 func countLines(path string) int {
-	content, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return 0
 	}
-	return strings.Count(string(content), "\n") + 1
+	defer func() {
+		_ = file.Close()
+	}()
+
+	scanner := bufio.NewScanner(file)
+	lineCount := 0
+	for scanner.Scan() {
+		lineCount++
+	}
+
+	// Handle files that don't end with newline
+	if lineCount == 0 {
+		// Check if file has any content
+		if stat, err := file.Stat(); err == nil && stat.Size() > 0 {
+			lineCount = 1
+		}
+	}
+
+	return lineCount
 }

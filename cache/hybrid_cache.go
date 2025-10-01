@@ -2,6 +2,7 @@ package cache
 
 import (
 	"container/list"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -26,7 +27,7 @@ type HybridCache struct {
 // cacheItem represents an item in the LRU cache
 type cacheItem struct {
 	key        string
-	entry      Entry  // Use Entry from file_cache.go
+	entry      Entry // Use Entry from file_cache.go
 	lastAccess time.Time
 }
 
@@ -52,7 +53,17 @@ func NewHybridCache(baseDir string, maxItems int) (*HybridCache, error) {
 	}
 
 	// Start background flush goroutine
-	go hc.backgroundFlush()
+	// Capture cache reference to avoid race condition warnings
+	cache := hc
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				// Log the panic and continue
+				fmt.Printf("Hybrid cache background flush goroutine recovered from panic: %v\n", recovered)
+			}
+		}()
+		cache.backgroundFlush()
+	}()
 
 	// Load hot data from disk cache into memory
 	hc.preloadHotData()
@@ -192,7 +203,7 @@ func (hc *HybridCache) preloadHotData() {
 	count := 0
 	maxPreload := hc.maxItems / 2
 
-	for key, record := range hc.diskCache.data.Files {
+	for _, record := range hc.diskCache.data.Files {
 		if count >= maxPreload {
 			break
 		}
@@ -203,7 +214,7 @@ func (hc *HybridCache) preloadHotData() {
 				Hash:   record.Hash,
 				Issues: record.Issues, // Already []*Issue type
 			}
-			hc.addToMemCache(key, entry)
+			hc.addToMemCache(record.Path, entry)
 			count++
 		}
 	}
@@ -222,7 +233,7 @@ func (hc *HybridCache) Close() error {
 	return hc.diskCache.Close()
 }
 
-// Stats returns cache statistics
+// Stats return cache statistics
 func (hc *HybridCache) Stats() map[string]interface{} {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()

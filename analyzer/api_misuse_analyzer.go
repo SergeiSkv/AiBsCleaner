@@ -4,505 +4,492 @@ import (
 	"go/ast"
 	"go/token"
 	"strings"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
-// APIMisuseAnalyzer detects common API misuse patterns
-// Constants for common strings
-const (
-	backgroundFunc = "Background"
-	recoverFunc    = "recover"
-)
+// APIMisuseAnalyzer focuses on high signal API pitfalls (waitgroup misuse, expensive calls in loops, etc.).
+type APIMisuseAnalyzer struct{}
 
-type APIMisuseAnalyzer struct {
-	name        string
-	loopDepth   int
+func NewAPIMisuseAnalyzer() Analyzer {
+	return &APIMisuseAnalyzer{}
+}
+
+func (a *APIMisuseAnalyzer) Name() string {
+	return "API Misuse"
+}
+
+func (a *APIMisuseAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
+	if !ok {
+		return nil
+	}
+
+	filename := ""
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
+	}
+
+	ctx := newAPIContext(fset, filename)
+	ast.Walk(&apiVisitor{ctx: ctx}, file)
+	return ctx.issues
+}
+
+type apiVisitor struct {
+	ctx *apiContext
+}
+
+func (v *apiVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		v.ctx.popState()
+		return nil
+	}
+
+	switch n := node.(type) {
+	case *ast.FuncDecl:
+		v.visitFuncDecl(n)
+		return nil
+	case *ast.FuncLit:
+		v.visitFuncLit(n)
+		return nil
+	case *ast.RangeStmt:
+		v.visitRangeStmt(n)
+		return nil
+	case *ast.ForStmt:
+		v.visitForStmt(n)
+		return nil
+	case *ast.DeferStmt:
+		if v.visitDeferStmt(n) {
+			return nil
+		}
+	case *ast.GoStmt:
+		if v.visitGoStmt(n) {
+			return nil
+		}
+	case *ast.ValueSpec:
+		v.ctx.recordValueSpec(n)
+	case *ast.CallExpr:
+		v.ctx.handleCall(n)
+	case *ast.GenDecl:
+		// value specs handled when walking deeper
+	default:
+		// no-op
+	}
+
+	v.ctx.pushCopy()
+	return v
+}
+
+func (v *apiVisitor) visitFuncDecl(n *ast.FuncDecl) {
+	v.ctx.recordFuncParams(n)
+	v.ctx.detectMutexParams(n)
+	if n.Body == nil {
+		return
+	}
+	pop := v.ctx.pushScope(false, false, false)
+	v.ctx.funcDepth++
+	ast.Walk(v, n.Body)
+	pop()
+	v.ctx.funcDepth--
+}
+
+func (v *apiVisitor) visitFuncLit(n *ast.FuncLit) {
+	if n.Body == nil {
+		return
+	}
+	pop := v.ctx.pushScope(v.ctx.state.inLoop, v.ctx.state.inDefer, v.ctx.state.inGoroutine)
+	v.ctx.funcDepth++
+	ast.Walk(v, n.Body)
+	pop()
+	v.ctx.funcDepth--
+}
+
+func (v *apiVisitor) visitRangeStmt(n *ast.RangeStmt) {
+	pop := v.ctx.pushScope(true, false, false)
+	if n.Key != nil {
+		ast.Walk(v, n.Key)
+	}
+	if n.Value != nil {
+		ast.Walk(v, n.Value)
+	}
+	if n.X != nil {
+		ast.Walk(v, n.X)
+	}
+	if n.Body != nil {
+		ast.Walk(v, n.Body)
+	}
+	pop()
+}
+
+func (v *apiVisitor) visitForStmt(n *ast.ForStmt) {
+	pop := v.ctx.pushScope(true, false, false)
+	if n.Init != nil {
+		ast.Walk(v, n.Init)
+	}
+	if n.Cond != nil {
+		ast.Walk(v, n.Cond)
+	}
+	if n.Post != nil {
+		ast.Walk(v, n.Post)
+	}
+	if n.Body != nil {
+		ast.Walk(v, n.Body)
+	}
+	pop()
+}
+
+func (v *apiVisitor) visitDeferStmt(n *ast.DeferStmt) bool {
+	if n.Call == nil {
+		return false
+	}
+	pop := v.ctx.pushScope(v.ctx.state.inLoop, true, v.ctx.state.inGoroutine)
+	ast.Walk(v, n.Call)
+	pop()
+	return true
+}
+
+func (v *apiVisitor) visitGoStmt(n *ast.GoStmt) bool {
+	if n.Call == nil {
+		return false
+	}
+	pop := v.ctx.pushScope(v.ctx.state.inLoop, v.ctx.state.inDefer, true)
+	ast.Walk(v, n.Call)
+	pop()
+	return true
+}
+
+type apiState struct {
+	inLoop      bool
 	inDefer     bool
 	inGoroutine bool
 }
 
-// NewAPIMisuseAnalyzer creates a new API misuse analyzer
-func NewAPIMisuseAnalyzer() Analyzer {
-	return &APIMisuseAnalyzer{
-		name: "API Misuse",
-	}
+type apiContext struct {
+	fset     *token.FileSet
+	filename string
+	issues   []*models.Issue
+
+	stateStack []apiState
+	state      apiState
+	funcDepth  int
+
+	types *typeTable
 }
 
-func (a *APIMisuseAnalyzer) Name() string {
-	return a.name
+func newAPIContext(fset *token.FileSet, filename string) *apiContext {
+	ctx := &apiContext{
+		fset:       fset,
+		filename:   filename,
+		issues:     make([]*models.Issue, 0, 16),
+		stateStack: make([]apiState, 0, 8),
+		types:      newTypeTable(),
+	}
+	ctx.stateStack = append(ctx.stateStack, apiState{})
+	ctx.state = apiState{}
+	return ctx
 }
 
-func (a *APIMisuseAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	issues := []*Issue{}
+func (ctx *apiContext) pushScope(loop, deferCtx, goroutine bool) func() {
+	ctx.stateStack = append(ctx.stateStack, apiState{
+		inLoop:      loop,
+		inDefer:     deferCtx,
+		inGoroutine: goroutine,
+	})
+	ctx.state = ctx.stateStack[len(ctx.stateStack)-1]
+	return ctx.popState
+}
 
-	astNode, ok := node.(ast.Node)
-	if !ok {
-		return issues
+func (ctx *apiContext) pushCopy() {
+	ctx.stateStack = append(ctx.stateStack, ctx.state)
+	ctx.state = ctx.stateStack[len(ctx.stateStack)-1]
+}
+
+func (ctx *apiContext) popState() {
+	if len(ctx.stateStack) == 0 {
+		return
 	}
+	ctx.stateStack = ctx.stateStack[:len(ctx.stateStack)-1]
+	if len(ctx.stateStack) == 0 {
+		ctx.state = apiState{}
+		ctx.stateStack = append(ctx.stateStack, ctx.state)
+		return
+	}
+	ctx.state = ctx.stateStack[len(ctx.stateStack)-1]
+}
 
-	// Reset state for each analysis
-	a.loopDepth = 0
-	a.inDefer = false
-	a.inGoroutine = false
-
-	a.walkWithContext(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.DeferStmt:
-				// Check for defer in loop
-				if a.loopDepth > 0 {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       pos.Filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueDeferInLoop,
-							Severity:   SeverityLevelHigh,
-							Message:    "defer in loop - accumulates until function returns",
-							Suggestion: "Extract loop body to separate function or handle cleanup differently",
-							Code:       getCodeSnippet(node, fset),
-						},
-					)
-				}
-			case *ast.CallExpr:
-				issues = append(issues, a.checkCallExpr(node, fset)...)
-			case *ast.FuncDecl:
-				issues = append(issues, a.checkFuncDecl(node, fset)...)
-			}
+func (ctx *apiContext) inDeferContext() bool {
+	if ctx.state.inDefer {
+		return true
+	}
+	for i := len(ctx.stateStack) - 1; i >= 0; i-- {
+		if ctx.stateStack[i].inDefer {
 			return true
-		},
-	)
-
-	return issues
-}
-
-func (a *APIMisuseAnalyzer) walkWithContext(node ast.Node, fn func(ast.Node) bool) {
-	var walkNode func(ast.Node, int, bool, bool) bool
-	walkNode = func(n ast.Node, loopDepth int, inDefer bool, inGoroutine bool) bool {
-		// Update analyzer state
-		oldLoopDepth := a.loopDepth
-		oldInDefer := a.inDefer
-		oldInGoroutine := a.inGoroutine
-
-		a.loopDepth = loopDepth
-		a.inDefer = inDefer
-		a.inGoroutine = inGoroutine
-
-		// Process current node
-		if !fn(n) {
-			a.loopDepth = oldLoopDepth
-			a.inDefer = oldInDefer
-			a.inGoroutine = oldInGoroutine
-			return false
 		}
-
-		// Walk children with updated context
-		handled := a.handleSpecialNodes(n, walkNode, loopDepth, inDefer, inGoroutine)
-		if handled {
-			a.loopDepth = oldLoopDepth
-			a.inDefer = oldInDefer
-			a.inGoroutine = oldInGoroutine
-			return false
-		}
-
-		// Restore state
-		a.loopDepth = oldLoopDepth
-		a.inDefer = oldInDefer
-		a.inGoroutine = oldInGoroutine
-		return true
-	}
-
-	ast.Inspect(
-		node, func(n ast.Node) bool {
-			return walkNode(n, a.loopDepth, a.inDefer, a.inGoroutine)
-		},
-	)
-}
-
-func (a *APIMisuseAnalyzer) handleSpecialNodes(n ast.Node, walkNode func(ast.Node, int, bool, bool) bool, loopDepth int, inDefer, inGoroutine bool) bool {
-	switch stmt := n.(type) {
-	case *ast.ForStmt:
-		a.walkForStmt(stmt, walkNode, loopDepth, inDefer, inGoroutine)
-		return true
-	case *ast.RangeStmt:
-		a.walkRangeStmt(stmt, walkNode, loopDepth, inDefer, inGoroutine)
-		return true
-	case *ast.DeferStmt:
-		if stmt.Call != nil {
-			walkNode(stmt.Call, loopDepth, true, inGoroutine)
-		}
-		return true
-	case *ast.GoStmt:
-		if stmt.Call != nil {
-			walkNode(stmt.Call, loopDepth, inDefer, true)
-		}
-		return true
 	}
 	return false
 }
 
-func (a *APIMisuseAnalyzer) walkForStmt(stmt *ast.ForStmt, walkNode func(ast.Node, int, bool, bool) bool, loopDepth int, inDefer, inGoroutine bool) {
-	if stmt.Init != nil {
-		walkNode(stmt.Init, loopDepth+1, inDefer, inGoroutine)
+func (ctx *apiContext) recordValueSpec(spec *ast.ValueSpec) {
+	typ := canonicalType(spec.Type)
+	if typ == "" {
+		return
 	}
-	if stmt.Cond != nil {
-		walkNode(stmt.Cond, loopDepth+1, inDefer, inGoroutine)
-	}
-	if stmt.Post != nil {
-		walkNode(stmt.Post, loopDepth+1, inDefer, inGoroutine)
-	}
-	if stmt.Body != nil {
-		walkNode(stmt.Body, loopDepth+1, inDefer, inGoroutine)
-	}
-}
-
-func (a *APIMisuseAnalyzer) walkRangeStmt(stmt *ast.RangeStmt, walkNode func(ast.Node, int, bool, bool) bool, loopDepth int, inDefer, inGoroutine bool) {
-	if stmt.Key != nil {
-		walkNode(stmt.Key, loopDepth+1, inDefer, inGoroutine)
-	}
-	if stmt.Value != nil {
-		walkNode(stmt.Value, loopDepth+1, inDefer, inGoroutine)
-	}
-	if stmt.X != nil {
-		walkNode(stmt.X, loopDepth, inDefer, inGoroutine)
-	}
-	if stmt.Body != nil {
-		walkNode(stmt.Body, loopDepth+1, inDefer, inGoroutine)
-	}
-}
-
-func (a *APIMisuseAnalyzer) checkCallExpr(call *ast.CallExpr, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-
-	// Get function name
-	funcName := getFuncName(call)
-	if funcName == "" {
-		return issues
-	}
-
-	pos := fset.Position(call.Pos())
-
-	// Check defer issues
-	if issue := a.checkDeferIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check concurrency issues
-	if issue := a.checkConcurrencyIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check time issues
-	if issue := a.checkTimeIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check formatting issues
-	if issue := a.checkFormattingIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check context issues
-	if issue := a.checkContextIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check logging issues
-	if issue := a.checkLoggingIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check recovery issues
-	if issue := a.checkRecoveryIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check profiling issues
-	if issue := a.checkProfilingIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check marshaling issues
-	if issue := a.checkMarshalingIssues(call, funcName, pos, fset); issue != nil {
-		issues = append(issues, issue)
-	}
-
-	// Check regex issues
-	issues = append(issues, a.checkRegexIssues(call, funcName, pos, fset)...)
-
-	return issues
-}
-
-func (a *APIMisuseAnalyzer) checkDeferIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if funcName == "defer" && a.loopDepth > 0 {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueDeferInLoop,
-			Severity:   SeverityLevelHigh,
-			Message:    "defer in loop - accumulates until function returns",
-			Suggestion: "Extract loop body to separate function or handle cleanup differently",
-			Code:       getCodeSnippet(call, fset),
+	for _, name := range spec.Names {
+		if name == nil || name.Obj == nil {
+			continue
 		}
+		ctx.types.record(name.Obj.Pos(), typ)
 	}
-	return nil
 }
 
-func (a *APIMisuseAnalyzer) checkConcurrencyIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if strings.Contains(funcName, "Add") && a.inGoroutine {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueWaitgroupAddInGoroutine,
-			Severity:   SeverityLevelHigh,
-			Message:    "WaitGroup.Add called inside goroutine - race condition",
-			Suggestion: "Call Add before starting the goroutine",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkTimeIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if strings.Contains(funcName, "Sleep") && a.loopDepth > 0 {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueSleepInLoop,
-			Severity:   SeverityLevelMedium,
-			Message:    "time.Sleep in loop - blocks execution",
-			Suggestion: "Use time.Ticker or channels for periodic operations",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	if strings.Contains(funcName, "Now") && a.loopDepth > 0 {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueTimeNowInLoop,
-			Severity:   SeverityLevelMedium,
-			Message:    "Calling time.Now() in loop - expensive syscall",
-			Suggestion: "Cache time outside loop or use time.Ticker for periodic timing",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkFormattingIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if funcName == "fmt.Sprintf" && len(call.Args) == 2 {
-		if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Value == `"%s%s"` {
-			return &Issue{
-				File:       pos.Filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueSprintfConcatenation,
-				Severity:   SeverityLevelLow,
-				Message:    "Using fmt.Sprintf for simple string concatenation",
-				Suggestion: "Use + operator or strings.Builder for better performance",
-				Code:       getCodeSnippet(call, fset),
-			}
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkContextIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if funcName == "context.Background" || funcName == backgroundFunc {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueContextBackgroundMisuse,
-			Severity:   SeverityLevelMedium,
-			Message:    "Using context.Background() - may be inappropriate for request handlers",
-			Suggestion: "Use request context or context with timeout/cancel",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkLoggingIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if a.loopDepth > 0 && (strings.Contains(funcName, "log.") || strings.Contains(funcName, "Printf") || strings.Contains(
-		funcName, "Print",
-	)) {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueLogInHotPath,
-			Severity:   SeverityLevelMedium,
-			Message:    "Logging in hot path (loop) - performance impact",
-			Suggestion: "Use conditional logging or batch logging",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkRecoveryIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if funcName == recoverFunc && !a.inDefer {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueRecoverWithoutDefer,
-			Severity:   SeverityLevelHigh,
-			Message:    "recover() called outside defer - won't work",
-			Suggestion: "recover() must be called from within a deferred function",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkProfilingIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if strings.Contains(funcName, "StartCPUProfile") {
-		if len(call.Args) > 0 {
-			if ident, ok := call.Args[0].(*ast.Ident); ok && ident.Name == "nil" {
-				return &Issue{
-					File:       pos.Filename,
-					Line:       pos.Line,
-					Column:     pos.Column,
-					Position:   pos,
-					Type:       IssuePprofNilWriter,
-					Severity:   SeverityLevelHigh,
-					Message:    "pprof.StartCPUProfile requires io.Writer, not nil",
-					Suggestion: "Pass an io.Writer (e.g., os.Create(\"cpu.prof\")) instead of nil",
-					Code:       getCodeSnippet(call, fset),
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkMarshalingIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) *Issue {
-	if strings.Contains(funcName, "Marshal") && a.loopDepth > 0 {
-		return &Issue{
-			File:       pos.Filename,
-			Line:       pos.Line,
-			Column:     pos.Column,
-			Position:   pos,
-			Type:       IssueJSONMarshalInLoop,
-			Severity:   SeverityLevelHigh,
-			Message:    "JSON marshaling in loop - creates garbage",
-			Suggestion: "Pre-marshal data or use streaming encoder",
-			Code:       getCodeSnippet(call, fset),
-		}
-	}
-	return nil
-}
-
-func (a *APIMisuseAnalyzer) checkRegexIssues(call *ast.CallExpr, funcName string, pos token.Position, fset *token.FileSet) []*Issue {
-	var issues []*Issue
-	if (strings.Contains(funcName, "Compile") || strings.Contains(funcName, "MustCompile")) && strings.Contains(funcName, "regexp") {
-		if a.loopDepth > 0 {
-			issues = append(
-				issues, &Issue{
-					File:       pos.Filename,
-					Line:       pos.Line,
-					Column:     pos.Column,
-					Position:   pos,
-					Type:       IssueRegexCompileInLoop,
-					Severity:   SeverityLevelHigh,
-					Message:    "Compiling regex in loop - very expensive",
-					Suggestion: "Compile regex once outside loop, use compiled regex",
-					Code:       getCodeSnippet(call, fset),
-				},
-			)
-		} else {
-			issues = append(
-				issues, &Issue{
-					File:       pos.Filename,
-					Line:       pos.Line,
-					Column:     pos.Column,
-					Position:   pos,
-					Type:       IssueRegexCompileInFunc,
-					Severity:   SeverityLevelMedium,
-					Message:    "Compiling regex in function - recompiled on each call",
-					Suggestion: "Compile regex once at package level",
-					Code:       getCodeSnippet(call, fset),
-				},
-			)
-		}
-	}
-	return issues
-}
-
-func (a *APIMisuseAnalyzer) checkFuncDecl(fn *ast.FuncDecl, fset *token.FileSet) []*Issue {
-	// Check for mutex passed by value
+func (ctx *apiContext) recordFuncParams(fn *ast.FuncDecl) {
 	if fn.Type == nil || fn.Type.Params == nil {
+		return
+	}
+	for _, field := range fn.Type.Params.List {
+		typ := canonicalType(field.Type)
+		if typ == "" {
+			continue
+		}
+		for _, name := range field.Names {
+			if name == nil || name.Obj == nil {
+				continue
+			}
+			ctx.types.record(name.Obj.Pos(), typ)
+		}
+	}
+}
+
+func (ctx *apiContext) detectMutexParams(fn *ast.FuncDecl) {
+	if fn.Type == nil || fn.Type.Params == nil {
+		return
+	}
+
+	for _, field := range fn.Type.Params.List {
+		if field == nil {
+			continue
+		}
+
+		// Only flag direct sync.Mutex / sync.RWMutex (passing by value)
+		sel, ok := field.Type.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok || pkgIdent.Name != pkgSync {
+			continue
+		}
+
+		if sel.Sel.Name != typeMutex && sel.Sel.Name != typeRWMutex {
+			continue
+		}
+
+		pos := ctx.fset.Position(field.Pos())
+		issue := ctx.newIssue(pos, models.IssueMutexByValue, models.SeverityLevelHigh,
+			"sync.Mutex passed by value - copying a mutex breaks locking semantics",
+			"Accept *sync.Mutex or *sync.RWMutex instead of a value copy")
+
+		ctx.issues = append(ctx.issues, issue)
+	}
+}
+
+func (ctx *apiContext) handleCall(call *ast.CallExpr) {
+	pos := ctx.fset.Position(call.Pos())
+
+	if issue := ctx.detectWaitGroupAdd(call, pos); issue != nil {
+		ctx.issues = append(ctx.issues, issue)
+	}
+	if issue := ctx.detectTimeMisuse(call, pos); issue != nil {
+		ctx.issues = append(ctx.issues, issue)
+	}
+	if issue := ctx.detectFmtConcat(call, pos); issue != nil {
+		ctx.issues = append(ctx.issues, issue)
+	}
+	if issue := ctx.detectPprofMisuse(call, pos); issue != nil {
+		ctx.issues = append(ctx.issues, issue)
+	}
+	if issue := ctx.detectRecoverMisuse(call, pos); issue != nil {
+		ctx.issues = append(ctx.issues, issue)
+	}
+	if issue := ctx.detectJSONMarshal(call, pos); issue != nil {
+		ctx.issues = append(ctx.issues, issue)
+	}
+	ctx.issues = append(ctx.issues, ctx.detectRegexIssues(call, pos)...)
+}
+
+func (ctx *apiContext) detectWaitGroupAdd(call *ast.CallExpr, pos token.Position) *models.Issue {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != methodAdd {
 		return nil
 	}
 
-	issues := make([]*Issue, 0, len(fn.Type.Params.List))
-
-	for _, param := range fn.Type.Params.List {
-		sel, ok := param.Type.(*ast.SelectorExpr)
-		if !ok {
-			continue
-		}
-
-		pkg, ok := sel.X.(*ast.Ident)
-		if !ok {
-			continue
-		}
-
-		if pkg.Name != "sync" || (sel.Sel.Name != "Mutex" && sel.Sel.Name != "RWMutex") {
-			continue
-		}
-
-		pos := fset.Position(param.Pos())
-		issues = append(
-			issues, &Issue{
-				File:       pos.Filename,
-				Line:       pos.Line,
-				Column:     pos.Column,
-				Position:   pos,
-				Type:       IssueMutexByValue,
-				Severity:   SeverityLevelHigh,
-				Message:    "Mutex passed by value - won't protect shared state",
-				Suggestion: "Pass mutex by pointer (*sync.Mutex)",
-				Code:       getCodeSnippet(param, fset),
-			},
-		)
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || ident.Obj == nil {
+		return nil
 	}
 
-	return issues
-}
-
-func getFuncName(call *ast.CallExpr) string {
-	switch fun := call.Fun.(type) {
-	case *ast.Ident:
-		return fun.Name
-	case *ast.SelectorExpr:
-		if pkg, ok := fun.X.(*ast.Ident); ok {
-			return pkg.Name + "." + fun.Sel.Name
-		}
-		return fun.Sel.Name
+	if !isWaitGroupType(ctx.types.lookup(ident.Obj.Pos())) {
+		return nil
 	}
-	return ""
+
+	if !ctx.state.inGoroutine {
+		return nil
+	}
+
+	return ctx.newIssue(pos, models.IssueWaitgroupAddInGoroutine, models.SeverityLevelHigh,
+		"WaitGroup.Add called from goroutine - call Add before starting goroutines",
+		"Increment the WaitGroup counter before launching the goroutine")
 }
 
-func getCodeSnippet(node ast.Node, fset *token.FileSet) string {
-	pos := fset.Position(node.Pos())
-	end := fset.Position(node.End())
+func (ctx *apiContext) detectTimeMisuse(call *ast.CallExpr, pos token.Position) *models.Issue {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
 
-	// This is simplified - would need actual file content
-	return "code snippet at " + pos.String() + "-" + end.String()
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != pkgTime {
+		return nil
+	}
+
+	if !ctx.state.inLoop || ctx.funcDepth == 0 {
+		return nil
+	}
+
+	switch sel.Sel.Name {
+	case "Sleep":
+		return ctx.newIssue(pos, models.IssueSleepInLoop, models.SeverityLevelMedium,
+			"time.Sleep in loop blocks the entire iteration",
+			"Use a time.Ticker or rate limiter outside the loop")
+	case "Now":
+		return ctx.newIssue(pos, models.IssueTimeNowInLoop, models.SeverityLevelMedium,
+			"time.Now called in loop - repeated syscalls",
+			"Capture time once before the loop or reuse a ticker")
+	default:
+		return nil
+	}
+}
+
+func (ctx *apiContext) detectFmtConcat(call *ast.CallExpr, pos token.Position) *models.Issue {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != "fmt" || sel.Sel.Name != "Sprintf" {
+		return nil
+	}
+	if ctx.funcDepth == 0 || len(call.Args) != 2 {
+		return nil
+	}
+	lit, ok := call.Args[0].(*ast.BasicLit)
+	if !ok || !strings.EqualFold(strings.Trim(lit.Value, `"`), "%s%s") {
+		return nil
+	}
+
+	return ctx.newIssue(pos, models.IssueSprintfConcatenation, models.SeverityLevelLow,
+		"fmt.Sprintf used for simple concatenation",
+		"Use the + operator or strings.Builder for simple joins")
+}
+
+func (ctx *apiContext) detectPprofMisuse(call *ast.CallExpr, pos token.Position) *models.Issue {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "StartCPUProfile" {
+		return nil
+	}
+
+	if len(call.Args) == 0 {
+		return nil
+	}
+	if ident, ok := call.Args[0].(*ast.Ident); !ok || ident.Name != "nil" {
+		return nil
+	}
+
+	return ctx.newIssue(pos, models.IssuePprofNilWriter, models.SeverityLevelHigh,
+		"pprof.StartCPUProfile called with nil writer",
+		"Pass an io.Writer (e.g. os.Create) instead of nil")
+}
+
+func (ctx *apiContext) detectRecoverMisuse(call *ast.CallExpr, pos token.Position) *models.Issue {
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != funcRecover {
+		return nil
+	}
+	if ctx.inDeferContext() {
+		return nil
+	}
+
+	return ctx.newIssue(pos, models.IssueRecoverWithoutDefer, models.SeverityLevelHigh,
+		"recover must be called from within a deferred function",
+		"Wrap recover in a deferred closure")
+}
+
+func (ctx *apiContext) detectJSONMarshal(call *ast.CallExpr, pos token.Position) *models.Issue {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != "json" {
+		return nil
+	}
+
+	if sel.Sel.Name != "Marshal" && sel.Sel.Name != "MarshalIndent" {
+		return nil
+	}
+
+	if !ctx.state.inLoop || ctx.funcDepth == 0 {
+		return nil
+	}
+
+	return ctx.newIssue(pos, models.IssueJSONMarshalInLoop, models.SeverityLevelHigh,
+		"encoding/json marshaling in loop allocates every iteration",
+		"Move marshaling outside the loop or reuse an encoder")
+}
+
+func (ctx *apiContext) detectRegexIssues(call *ast.CallExpr, pos token.Position) []*models.Issue {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != "regexp" {
+		return nil
+	}
+
+	if sel.Sel.Name != "Compile" && sel.Sel.Name != "MustCompile" {
+		return nil
+	}
+
+	if ctx.state.inLoop {
+		return []*models.Issue{
+			ctx.newIssue(pos, models.IssueRegexCompileInLoop, models.SeverityLevelHigh,
+				"regexp compile in loop is extremely expensive",
+				"Compile the regexp once and reuse it"),
+		}
+	}
+
+	if ctx.funcDepth == 0 {
+		return nil
+	}
+
+	return []*models.Issue{
+		ctx.newIssue(pos, models.IssueRegexCompileInFunc, models.SeverityLevelMedium,
+			"regexp compiled inside function - runs on every call",
+			"Move regexp.MustCompile to package scope or cache it"),
+	}
+}
+
+func (ctx *apiContext) newIssue(pos token.Position, issueType models.IssueType, severity models.SeverityLevel, message, suggestion string) *models.Issue {
+	return &models.Issue{
+		File:       ctx.filename,
+		Line:       pos.Line,
+		Column:     pos.Column,
+		Position:   pos,
+		Type:       issueType,
+		Severity:   severity,
+		Message:    message,
+		Suggestion: suggestion,
+	}
 }

@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+
+	"github.com/SergeiSkv/AiBsCleaner/models"
 )
 
 type MapAnalyzer struct{}
@@ -12,99 +14,102 @@ func NewMapAnalyzer() Analyzer {
 }
 
 func (ma *MapAnalyzer) Name() string {
-	return "MapAnalyzer"
+	return "Map Optimization"
 }
 
-func (ma *MapAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*Issue {
-	issues := make([]*Issue, 0, 5) // Pre-allocate for common case
-
-	astNode, ok := node.(ast.Node)
+func (ma *MapAnalyzer) Analyze(node interface{}, fset *token.FileSet) []*models.Issue {
+	file, ok := node.(*ast.File)
 	if !ok {
-		return issues
+		return nil
 	}
 
-	// Get filename from the first position we encounter
 	filename := ""
-	if astNode.Pos().IsValid() {
-		filename = fset.Position(astNode.Pos()).Filename
+	if file.Pos().IsValid() {
+		filename = fset.Position(file.Pos()).Filename
 	}
 
-	ast.Inspect(
-		astNode, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.CallExpr:
-				if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == funcMake {
-					if ma.isMapWithoutSize(node) {
-						pos := fset.Position(node.Pos())
-						issues = append(
-							issues, &Issue{
-								File:       filename,
-								Line:       pos.Line,
-								Column:     pos.Column,
-								Position:   pos,
-								Type:       IssueMapCapacity,
-								Severity:   SeverityLevelLow,
-								Message:    "Map created without size hint may cause rehashing",
-								Suggestion: "Provide size hint if known: make(map[K]V, size)",
-							},
-						)
-					}
-				}
-			case *ast.RangeStmt:
-				if ma.isRangeOverMapKeys(node) {
-					pos := fset.Position(node.Pos())
-					issues = append(
-						issues, &Issue{
-							File:       filename,
-							Line:       pos.Line,
-							Column:     pos.Column,
-							Position:   pos,
-							Type:       IssueMapCapacity,
-							Severity:   SeverityLevelLow,
-							Message:    "Iterating over map keys when value is also needed",
-							Suggestion: "Use for k, v := range map to get both key and value",
-						},
-					)
-				}
-			}
-			return true
-		},
-	)
+	visitor := &mapVisitor{
+		fset:      fset,
+		filename:  filename,
+		loopDepth: 0,
+		issues:    make([]*models.Issue, 0, 8),
+	}
 
-	return issues
+	ast.Walk(visitor, file)
+	return visitor.issues
 }
 
-func (ma *MapAnalyzer) isMapWithoutSize(call *ast.CallExpr) bool {
-	if len(call.Args) < 1 {
-		return false
-	}
-
-	if mapType, ok := call.Args[0].(*ast.MapType); ok {
-		return mapType != nil && len(call.Args) == 1
-	}
-
-	return false
+type mapVisitor struct {
+	fset      *token.FileSet
+	filename  string
+	loopDepth int
+	issues    []*models.Issue
 }
 
-func (ma *MapAnalyzer) isRangeOverMapKeys(stmt *ast.RangeStmt) bool {
-	if stmt.Value != nil || stmt.Key == nil {
-		return false
+func (v *mapVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ForStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.RangeStmt:
+		v.loopDepth++
+		if n.Body != nil {
+			ast.Walk(v, n.Body)
+		}
+		v.loopDepth--
+		return nil
+	case *ast.CallExpr:
+		v.inspectCall(n)
+	}
+	return v
+}
+
+func (v *mapVisitor) inspectCall(call *ast.CallExpr) {
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != funcMake {
+		return
 	}
 
-	hasValueAccess := false
-	ast.Inspect(
-		stmt.Body, func(n ast.Node) bool {
-			indexExpr, ok := n.(*ast.IndexExpr)
-			if !ok {
-				return true
-			}
+	if len(call.Args) == 0 {
+		return
+	}
 
-			ident, ok := indexExpr.X.(*ast.Ident)
-			if ok && ident.Name != "" {
-				hasValueAccess = true
-			}
-			return true
-		},
-	)
-	return hasValueAccess
+	if _, ok := call.Args[0].(*ast.MapType); !ok {
+		return
+	}
+
+	// map created inside loop without capacity hint
+	if v.loopDepth > 0 && len(call.Args) == 1 {
+		pos := v.fset.Position(call.Pos())
+		v.issues = append(v.issues, &models.Issue{
+			File:       v.filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       models.IssueMapCapacity,
+			Severity:   models.SeverityLevelMedium,
+			Message:    "Map allocation inside loop without capacity hint",
+			Suggestion: "Pass expected size to make(map[K]V, size) or reuse a cleared map",
+		})
+		return
+	}
+
+	// map literal created per iteration; flag as GC pressure
+	if v.loopDepth > 0 {
+		pos := v.fset.Position(call.Pos())
+		v.issues = append(v.issues, &models.Issue{
+			File:       v.filename,
+			Line:       pos.Line,
+			Column:     pos.Column,
+			Position:   pos,
+			Type:       models.IssueMapCapacity,
+			Severity:   models.SeverityLevelLow,
+			Message:    "map allocation inside loop",
+			Suggestion: "Reuse map or allocate once before the loop",
+		})
+	}
 }
