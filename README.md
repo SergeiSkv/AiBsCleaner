@@ -149,18 +149,6 @@ db/query.go:67  N_PLUS_ONE_QUERY
 - ✅ **SliceAnalyzer** - Slice preallocation opportunities
 - And more performance-specific checks...
 
-### Automatic Fixing (Experimental)
-
-```bash
-# See what would be fixed
-aibscleaner --dry-run
-
-# Auto-fix simple issues
-aibscleaner --fix
-
-# Fix with AI assistance (uses local LLM)
-aibscleaner --fix --ai
-```
 
 ## Metrics That Matter
 
@@ -287,7 +275,6 @@ source integrations/vim/aibscleaner.vim
 
 " Commands:
 :AiBsClean      " Run analysis
-:AiBsCleanFix   " Auto-fix issues
 <leader>ab      " Quick analyze
 ```
 
@@ -295,7 +282,6 @@ source integrations/vim/aibscleaner.vim
 
 ```bash
 make analyze  # Run analysis
-make fix      # Auto-fix issues
 make build    # Build binary
 make install  # Install globally
 ```
@@ -402,11 +388,9 @@ func main() {
     // Filter AI bullshit
     aiBS := issues.FilterByType(detector.AIBullshit)
   
-    // Auto-fix simple issues
+    // Process issues
     for _, issue := range issues {
-        if issue.CanAutoFix() {
-            issue.Fix()
-        }
+        fmt.Printf("Found issue: %s\n", issue.Message)
     }
 }
 ```
@@ -470,9 +454,8 @@ We focus on what standard linters don't cover: **performance optimization**.
 - [ ]  **IntelliJ IDEA / GoLand Native Plugin**
 
   - [ ]  Real-time analysis as you type
-  - [ ]  Inline quick-fixes with preview
+  - [ ]  Inline issue highlighting
   - [ ]  Integration with GoLand inspections
-  - [ ]  Code intentions for auto-fixing
   - [ ]  Performance profiling integration
 
   - **ETA: February 2025**
@@ -501,7 +484,6 @@ We focus on what standard linters don't cover: **performance optimization**.
 
   - [X]  GitHub Actions workflow
   - [ ]  GitHub App with PR comments
-  - [ ]  Automatic fix PRs
   - [ ]  Performance impact badges
   - [ ]  Merge blocking on critical issues
 - [ ]  **GitLab Integration**
@@ -509,7 +491,6 @@ We focus on what standard linters don't cover: **performance optimization**.
   - [X]  GitLab CI template
   - [ ]  GitLab MR annotations
   - [ ]  Pipeline performance tracking
-  - [ ]  Auto-fix in merge trains
 - [ ]  **Advanced CI Features**
 
   - [ ]  Benchmark comparison (before/after)
@@ -529,7 +510,7 @@ We focus on what standard linters don't cover: **performance optimization**.
 - [ ]  **AI-Powered Analysis**
 
   - [ ]  GPT-4 integration for explanations
-  - [ ]  Auto-generated fix suggestions
+  - [ ]  Detailed issue explanations
   - [ ]  Learning from your codebase patterns
   - [ ]  Team-specific AI model training
 
