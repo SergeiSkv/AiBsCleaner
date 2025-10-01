@@ -214,6 +214,7 @@ var listCmd = &cobra.Command{
 			{"CPUOptimizationAnalyzer", "Detects CPU-intensive operations"},
 			{"NetworkPatternsAnalyzer", "Finds network performance issues"},
 			{"SyncPoolAnalyzer", "Suggests sync.Pool optimizations"},
+			{"StructLayoutAnalyzer", "Optimizes struct field alignment and memory layout"},
 			{"PrivacyAnalyzer", "Detects privacy issues and data leaks"},
 			{"DependencyAnalyzer", "Checks dependency health and vulnerabilities"},
 		}
@@ -553,6 +554,10 @@ func getMemoryGroup() analyzerGroup {
 			analyzer.IssueFrequentAllocation, analyzer.IssueLargeHeapAlloc, analyzer.IssuePointerHeavyStruct,
 			analyzer.IssueSliceCapacity, analyzer.IssueSliceCopy, analyzer.IssueSliceAppend, analyzer.IssueSliceRangeCopy,
 			analyzer.IssueMapCapacity, analyzer.IssueMapClear, analyzer.IssueInterfaceAllocation, analyzer.IssueEmptyInterface,
+			analyzer.IssueStructLayoutUnoptimized, analyzer.IssueStructLargePadding, analyzer.IssueStructFieldAlignment,
+			analyzer.IssueCacheFalseSharing, analyzer.IssueCacheLineWaste, analyzer.IssueCacheLineAlignment,
+			analyzer.IssueOversizedType, analyzer.IssueUnspecificIntType, analyzer.IssueSoAPattern,
+			analyzer.IssueNestedRangeCache, analyzer.IssueMapRangeCache,
 		},
 	}
 }

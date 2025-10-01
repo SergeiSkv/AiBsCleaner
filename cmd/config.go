@@ -49,6 +49,8 @@ type Config struct {
 		CGO                 AnalyzerConfig `yaml:"cgo" json:"cgo"`
 		String              AnalyzerConfig `yaml:"string" json:"string"`
 		Dependency          AnalyzerConfig `yaml:"dependency" json:"dependency"`
+		StructLayout        AnalyzerConfig `yaml:"struct_layout" json:"struct_layout"`
+		CPUCache            AnalyzerConfig `yaml:"cpu_cache" json:"cpu_cache"`
 	} `yaml:"analyzers" json:"analyzers"`
 
 	// Thresholds for various checks
@@ -119,6 +121,8 @@ func DefaultConfig() *Config {
 	config.Analyzers.CGO.Enabled = false // Disabled by default
 	config.Analyzers.String.Enabled = true
 	config.Analyzers.Dependency.Enabled = true
+	config.Analyzers.StructLayout.Enabled = true
+	config.Analyzers.CPUCache.Enabled = true
 
 	// Set default thresholds
 	config.Thresholds.MaxLoopDepth = 3
@@ -348,6 +352,8 @@ func (c *Config) GetAnalyzerConfig(analyzerName string) AnalyzerConfig {
 		"cgo":                 c.Analyzers.CGO,
 		"string":              c.Analyzers.String,
 		"dependency":          c.Analyzers.Dependency,
+		"structlayout":        c.Analyzers.StructLayout,
+		"cpucache":            c.Analyzers.CPUCache,
 	}
 
 	if cfg, ok := analyzerConfigMap[strings.ToLower(analyzerName)]; ok {

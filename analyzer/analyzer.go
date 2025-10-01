@@ -134,6 +134,12 @@ func Analyze(
 		// Security/privacy (specialized)
 		{"privacy", NewPrivacyAnalyzer},
 
+		// Struct layout optimization
+		{"structlayout", NewStructLayoutAnalyzer},
+
+		// CPU cache optimization
+		{"cpucache", NewCPUCacheAnalyzer},
+
 		// Testing (usually noisy, disabled by default in config)
 		{"testcoverage", NewTestCoverageAnalyzer},
 	}

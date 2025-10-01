@@ -1,6 +1,8 @@
 package analyzer
 
 // IssueType represents specific issue types as an enum
+//
+//go:generate go run github.com/dmarkham/enumer@latest -type=IssueType -trimprefix=Iпере
 type IssueType uint16
 
 const (
@@ -273,6 +275,21 @@ const (
 	IssueGlobalVariable
 	IssuePointerToSlice
 
+	// Struct Layout issues
+	IssueStructLayoutUnoptimized
+	IssueStructLargePadding
+	IssueStructFieldAlignment
+
+	// CPU Cache optimization issues
+	IssueCacheFalseSharing
+	IssueCacheLineWaste
+	IssueCacheLineAlignment
+	IssueOversizedType
+	IssueUnspecificIntType
+	IssueSoAPattern
+	IssueNestedRangeCache
+	IssueMapRangeCache
+
 	// Sentinel
 	IssueTypeMax
 )
@@ -302,6 +319,10 @@ var issueSeverityMap = map[IssueType]SeverityLevel{
 	IssueDeferInLoop:             SeverityLevelMedium,
 	IssueUncheckedParam:          SeverityLevelMedium,
 	IssueAIUnnecessaryComplexity: SeverityLevelMedium,
+	IssueStructLayoutUnoptimized: SeverityLevelMedium,
+	IssueCacheFalseSharing:       SeverityLevelHigh,
+	IssueSoAPattern:              SeverityLevelMedium,
+	IssueNestedRangeCache:        SeverityLevelMedium,
 }
 
 func (i IssueType) Severity() SeverityLevel {
