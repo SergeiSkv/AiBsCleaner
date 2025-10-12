@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+.github
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+aibscleaner
+dist/
+coverage.out
+coverage.html
+
+# Test files
+*_test.go
+testdata/
+test_data/
+*.test
+
+# Documentation
+*.md
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Cache
+.cache/
+cache/
+
+# Scripts
+*.sh
+test_*.txt
+top_1000_repos.txt
+
+# Config examples
+.aibscleaner.yaml
+.abcignore

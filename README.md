@@ -1,9 +1,14 @@
 # aiBsCleaner - Performance-Focused Static Analyzer for Go
 
-[![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat&logo=go)](https://go.dev)
+[![CI](https://github.com/SergeiSkv/AiBsCleaner/workflows/CI/badge.svg)](https://github.com/SergeiSkv/AiBsCleaner/actions)
+[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev)
+[![GoDoc](https://pkg.go.dev/badge/github.com/SergeiSkv/AiBsCleaner)](https://pkg.go.dev/github.com/SergeiSkv/AiBsCleaner)
+[![Go Report Card](https://goreportcard.com/badge/github.com/SergeiSkv/AiBsCleaner)](https://goreportcard.com/report/github.com/SergeiSkv/AiBsCleaner)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Test Coverage](https://img.shields.io/badge/coverage-66.8%25-yellow)](https://github.com/SergeiSkv/aiBsCleaner)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/SergeiSkv/aiBsCleaner/pulls)
+[![Release](https://img.shields.io/github/release/SergeiSkv/AiBsCleaner.svg)](https://github.com/SergeiSkv/AiBsCleaner/releases)
+[![Docker](https://img.shields.io/docker/pulls/sergeiskv/aibscleaner.svg)](https://hub.docker.com/r/sergeiskv/aibscleaner)
+[![codecov](https://codecov.io/gh/SergeiSkv/AiBsCleaner/branch/main/graph/badge.svg)](https://codecov.io/gh/SergeiSkv/AiBsCleaner)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 > **Performance analyzer that finds issues standard linters miss**
 
@@ -24,8 +29,28 @@ aiBsCleaner identifies performance issues that standard linters don't catch:
 
 ### Installation
 
+**Using Go:**
 ```bash
-go install github.com/SergeiSkv/aiBsCleaner@latest
+go install github.com/SergeiSkv/AiBsCleaner@latest
+```
+
+**Using Homebrew (macOS/Linux):**
+```bash
+brew install SergeiSkv/tap/aibscleaner
+```
+
+**Using Docker:**
+```bash
+docker pull sergeiskv/aibscleaner:latest
+docker run -v $(pwd):/workspace sergeiskv/aibscleaner .
+```
+
+**From Release (Linux/macOS/Windows):**
+```bash
+# Download from GitHub Releases
+wget https://github.com/SergeiSkv/AiBsCleaner/releases/latest/download/aibscleaner-linux-amd64
+chmod +x aibscleaner-linux-amd64
+sudo mv aibscleaner-linux-amd64 /usr/local/bin/aibscleaner
 ```
 
 ### Basic Usage
@@ -196,31 +221,46 @@ golangci-lint run ./...
 
 ## 🗺️ Roadmap
 
-### Current Focus
+### v1.0.0 (Production Ready) ✅
 
 - ✅ 33 production-ready analyzers
 - ✅ Test coverage improvements (66.8%)
 - ✅ Dead code removal
 - ✅ Cache system with deadlock fixes
-- 🔄 Testing on popular Go libraries
-- 🔄 Documentation improvements
+- ✅ CI/CD pipeline with GitHub Actions
+- ✅ GoReleaser for automated releases
+- ✅ Docker support
+- ✅ Multi-platform builds (Linux/macOS/Windows)
+- ✅ Security scanning with Gosec
+- ✅ Comprehensive documentation
 
 ### Future Plans
 
-- [ ]  IDE integrations (VS Code, GoLand)
-- [ ]  CI/CD examples and templates
-- [ ]  More analyzers (crypto, serialization)
-- [ ]  Auto-fix suggestions
-- [ ]  HTML/SARIF report formats
+- [ ] IDE integrations (VS Code, GoLand)
+- [ ] Auto-fix suggestions
+- [ ] HTML/SARIF report formats
+- [ ] More analyzers (additional crypto patterns)
+- [ ] Performance benchmarking suite
+- [ ] GitHub App integration
 
 ## 🤝 Contributing
 
-Contributions welcome! Areas of focus:
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+**Areas of focus:**
 
 1. **New Analyzers**: Add performance detectors
 2. **Test Coverage**: Improve from 66.8% to 85%+
 3. **Documentation**: Usage examples, best practices
 4. **Bug Reports**: Real-world testing feedback
+
+**Quick start:**
+```bash
+git clone https://github.com/SergeiSkv/AiBsCleaner.git
+cd AiBsCleaner
+make setup
+make test
+```
 
 ## 📜 License
 
@@ -236,6 +276,9 @@ MIT License - see [LICENSE](LICENSE) file
 
 - [Performance Error Catalog](performance_error_catalog.md) - All PVE codes
 - [PVE Codes Reference](PVE_CODES.md) - Detailed error descriptions
+- [Contributing Guide](CONTRIBUTING.md) - How to contribute
+- [Changelog](CHANGELOG.md) - Release history
+- [Testing Documentation](TESTING.md) - Test guides
 
 ---
 

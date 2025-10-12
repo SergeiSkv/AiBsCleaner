@@ -1,0 +1,86 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: aibscleaner
+    main: ./main.go
+    binary: aibscleaner
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/SergeiSkv/AiBsCleaner/version.Version={{.Version}}
+      - -X github.com/SergeiSkv/AiBsCleaner/version.CommitHash={{.ShortCommit}}
+      - -X github.com/SergeiSkv/AiBsCleaner/version.BuiltAt={{.Date}}
+
+archives:
+  - id: aibscleaner
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - performance_error_catalog.md
+      - PVE_CODES.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^Merge'
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: 'Performance'
+      regexp: "^.*perf[(\\w)]*:+.*$"
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: SergeiSkv
+    name: AiBsCleaner
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+
+brews:
+  - repository:
+      owner: SergeiSkv
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    folder: Formula
+    homepage: https://github.com/SergeiSkv/AiBsCleaner
+    description: Performance-focused static analyzer for Go
+    license: MIT
+    test: |
+      system "#{bin}/aibscleaner --help"
+    install: |
+      bin.install "aibscleaner"

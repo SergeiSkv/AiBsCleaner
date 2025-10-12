@@ -243,7 +243,7 @@ func isOnlyLowercase(s string) bool {
 
 // calculateEntropy calculates Shannon entropy of a string
 func calculateEntropy(s string) float64 {
-	if len(s) == 0 {
+	if s == "" {
 		return 0
 	}
 

@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  aibscleaner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aibscleaner:latest
+    container_name: aibscleaner
+    volumes:
+      - .:/workspace:ro
+      - ./cache:/cache
+    environment:
+      - AIBSCLEANER_CACHE_DIR=/cache
+    command: [".", "--enable-cache"]
+
+  # CI/CD service for running in pipelines
+  aibscleaner-ci:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aibscleaner:latest
+    volumes:
+      - .:/workspace:ro
+    command: ["--json", "--no-cache", "."]

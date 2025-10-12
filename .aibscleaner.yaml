@@ -1,0 +1,92 @@
+analyzers:
+    loop:
+        enabled: true
+    defer_optimization:
+        enabled: true
+    slice:
+        enabled: true
+    map:
+        enabled: true
+    reflection:
+        enabled: true
+    goroutine:
+        enabled: true
+    interface:
+        enabled: true
+    regex:
+        enabled: true
+    time:
+        enabled: true
+    memory_leak:
+        enabled: true
+    database:
+        enabled: true
+    nil_ptr:
+        enabled: true
+    api_misuse:
+        enabled: true
+    ai_bullshit:
+        enabled: true
+    channel:
+        enabled: true
+    http_client:
+        enabled: true
+    privacy:
+        enabled: true
+    context:
+        enabled: true
+    race_condition:
+        enabled: true
+    error_handling:
+        enabled: true
+    gc_pressure:
+        enabled: true
+    concurrency_patterns:
+        enabled: true
+    cpu_optimization:
+        enabled: true
+    network_patterns:
+        enabled: true
+    sync_pool:
+        enabled: true
+    test_coverage:
+        enabled: false
+    crypto:
+        enabled: true
+    serialization:
+        enabled: true
+    io_buffer:
+        enabled: true
+    http_reuse:
+        enabled: true
+    cgo:
+        enabled: false
+    string:
+        enabled: true
+    dependency:
+        enabled: true
+    struct_layout:
+        enabled: true
+    cpu_cache:
+        enabled: true
+thresholds:
+    max_loop_depth: 3
+    max_complexity: 10
+    max_function_length: 50
+    max_parameters: 5
+    max_return_values: 3
+paths:
+    exclude:
+        - examples
+        - vendor
+        - .git
+        - node_modules
+        - testdata
+        - test_data
+        - mocks
+        - _test.go
+    include: []
+output:
+    format: text
+    show_context: false
+    max_issues: 0

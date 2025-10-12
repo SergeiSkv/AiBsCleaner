@@ -1,0 +1,43 @@
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+comment:
+  layout: "header, diff, flags, components, footer"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "**/*_test.go"
+  - "**/*_enumer.go"
+  - "test/"
+  - "testdata/"
+  - "examples/"
+  - "tools/"
+  - "cmd/"
+
+component_management:
+  individual_components:
+    - component_id: analyzer
+      name: Analyzer
+      paths:
+        - analyzer/**
+    - component_id: cache
+      name: Cache
+      paths:
+        - cache/**
+    - component_id: models
+      name: Models
+      paths:
+        - models/**
